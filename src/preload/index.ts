@@ -27,7 +27,7 @@ const api = {
     ipcRenderer.invoke('lookup:honeypot', { chain, contract }),
   devWalletInfo: (chain: Chain, contract: string, creatorHint: string | null): Promise<DevWalletInfo | null> =>
     ipcRenderer.invoke('lookup:dev', { chain, contract, creatorHint }),
-  configStatus: (): Promise<{ hasAlchemy: boolean; hasHelius: boolean; hasEtherscan: boolean; hasCielo: boolean; hasBitquery: boolean }> =>
+  configStatus: (): Promise<{ hasAlchemy: boolean; hasHelius: boolean; hasEtherscan: boolean; hasCielo: boolean }> =>
     ipcRenderer.invoke('config:status'),
   getSettings: (): Promise<SettingsShape> => ipcRenderer.invoke('settings:get'),
   saveSettings: (s: SettingsShape): Promise<void> => ipcRenderer.invoke('settings:save', s),

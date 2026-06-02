@@ -2,59 +2,60 @@ import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 import type { EvmFlowChain, EvmFlowSnapshot, EvmFlowToken } from '../../shared/types';
 
-// Bitquery EVM streaming endpoint. Unlike Solana (which uses /eap), EVM data is
-// served from /graphql. Same legacy subscriptions-transport-ws framing
-// (connection_init → connection_ack → start → data) despite the "graphql-ws"
-// subprotocol — matching Bitquery's documented example.
-const ENDPOINT = 'wss://streaming.bitquery.io/graphql';
+// Live Uniswap-V2 net-ETH-inflow tracker built on a DIRECT Alchemy WebSocket
+// (eth_subscribe "logs") instead of a metered third-party API. We subscribe to
+// every V2-style Swap event on the chain, resolve each pair's tokens once via
+// cached eth_call lookups, keep only WETH-paired trades, and compute net ETH
+// inflow + price ourselves. Runs on the user's existing Alchemy key — no
+// Bitquery involved.
+const ALCHEMY_WS = (sub: string, key: string): string => `wss://${sub}.g.alchemy.com/v2/${key}`;
+const ALCHEMY_HTTP = (sub: string, key: string): string => `https://${sub}.g.alchemy.com/v2/${key}`;
+
+// keccak256("Swap(address,uint256,uint256,uint256,uint256,address)") — the
+// Uniswap V2 Swap event (shared by every V2 fork: Sushi, ShibaSwap, etc.).
+const SWAP_TOPIC = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822';
+
+// ERC-20 / pair function selectors (first 4 bytes of keccak256 of the signature).
+const SEL_TOKEN0 = '0x0dfe1681';   // token0()
+const SEL_TOKEN1 = '0xd21220a7';   // token1()
+const SEL_DECIMALS = '0x313ce567'; // decimals()
+const SEL_SYMBOL = '0x95d89b41';   // symbol()
+const SEL_NAME = '0x06fdde03';     // name()
 
 const WINDOW_MS = 15 * 60 * 1000;     // 15-minute rolling window
 const EMIT_INTERVAL_MS = 2_000;       // push a fresh snapshot to the UI every 2s
 const SPARK_BUCKETS = 24;             // points in each card's mini chart
 const MAX_TRADES_PER_TOKEN = 4_000;   // safety cap per token
 const MAX_TOKENS = 5_000;             // safety cap on tracked tokens
+const MAX_PAIRS = 20_000;             // safety cap on the pair cache
+const MAX_PENDING = 40;               // concurrent pair-resolution lookups
+const MAX_BUFFER_PER_PAIR = 40;       // swaps buffered while a pair resolves
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 30_000;
+const ETH_PRICE_POLL_MS = 60_000;     // refresh ETH/USD once a minute
 
-// Per-chain config: Bitquery network slug + the wrapped-native (WETH) address
-// used as the quote side. Base's native asset is also ETH.
-const CHAIN_CONFIG: Record<EvmFlowChain, { network: string; weth: string }> = {
-  ethereum: { network: 'eth', weth: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2' },
-  base: { network: 'base', weth: '0x4200000000000000000000000000000000000006' }
+// Per-chain config: Alchemy subdomain + the wrapped-native (WETH) address used
+// as the quote side. Base's native asset is also ETH. A single Alchemy key
+// works across both networks (only the subdomain changes).
+const CHAIN_CONFIG: Record<EvmFlowChain, { sub: string; weth: string; cgId: string }> = {
+  ethereum: { sub: 'eth-mainnet', weth: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', cgId: 'ethereum' },
+  base: { sub: 'base-mainnet', weth: '0x4200000000000000000000000000000000000006', cgId: 'ethereum' }
 };
 
-function isWeth(address: string | undefined, symbol: string | undefined, weth: string): boolean {
-  if (address && address.toLowerCase() === weth) return true;
-  if (symbol && /^w?eth$/i.test(symbol)) return true;
-  return false;
+interface RawSwap {
+  amount0In: bigint;
+  amount1In: bigint;
+  amount0Out: bigint;
+  amount1Out: bigint;
+  t: number;
 }
 
-// Live Uniswap V2 trades for the given network. ProtocolName "uniswap_v2" is
-// Bitquery's identifier for the V2 protocol across EVM chains.
-function buildQuery(network: string): string {
-  return `subscription {
-  EVM(network: ${network}) {
-    DEXTrades(
-      where: {
-        Trade: { Dex: { ProtocolName: { in: ["uniswap_v2"] } } }
-      }
-    ) {
-      Trade {
-        Buy {
-          Amount
-          AmountInUSD
-          Currency { SmartContract Symbol Name }
-        }
-        Sell {
-          Amount
-          AmountInUSD
-          Currency { SmartContract Symbol Name }
-        }
-      }
-      Block { Time }
-    }
-  }
-}`;
+interface PairInfo {
+  token: string;          // the non-WETH ERC-20 address
+  wethIsToken0: boolean;  // is WETH token0 of the pair?
+  decimals: number;       // decimals of the non-WETH token
+  symbol: string | null;
+  name: string | null;
 }
 
 interface TradeRec {
@@ -70,64 +71,100 @@ interface TokenAgg {
   trades: TradeRec[];
   firstSeen: number;   // ms
   lastTrade: number;   // ms
-  priceUsd: number | null;
+  priceEth: number | null; // last token price in ETH (from swap ratio)
 }
 
-interface BqCurrency {
-  SmartContract?: string;
-  Symbol?: string;
-  Name?: string;
-}
-interface BqSide {
-  Amount?: string;
-  AmountInUSD?: string;
-  Currency?: BqCurrency;
-}
-interface BqTrade {
-  Trade?: { Buy?: BqSide; Sell?: BqSide };
-  Block?: { Time?: string };
+function hexToBig(hex: string): bigint {
+  if (!hex || hex === '0x') return 0n;
+  try { return BigInt(hex.startsWith('0x') ? hex : `0x${hex}`); } catch { return 0n; }
 }
 
-function n(v: string | number | null | undefined): number {
-  if (v === null || v === undefined) return 0;
-  const x = typeof v === 'number' ? v : Number(v);
-  return Number.isFinite(x) ? x : 0;
+// Decode an eth_call return value that is either an ABI dynamic string or a
+// legacy bytes32 (e.g. MKR). Returns null on empty/garbage.
+function decodeString(hexResult: string | undefined): string | null {
+  if (!hexResult || hexResult === '0x') return null;
+  const data = hexResult.slice(2);
+  let raw: string;
+  try {
+    if (data.length >= 128) {
+      // dynamic string: [offset][length][bytes...]
+      const offset = Number(hexToBig(`0x${data.slice(0, 64)}`)) * 2;
+      const len = Number(hexToBig(`0x${data.slice(offset, offset + 64)}`));
+      const strHex = data.slice(offset + 64, offset + 64 + len * 2);
+      raw = Buffer.from(strHex, 'hex').toString('utf8');
+    } else {
+      // legacy bytes32 (NUL-padded)
+      raw = Buffer.from(data, 'hex').toString('utf8');
+    }
+  } catch {
+    return null;
+  }
+  // Keep printable ASCII (space..~), drop NUL/control padding. Keeps spaces so
+  // names like "Shiba Inu" survive.
+  let out = '';
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw.charCodeAt(i);
+    if (c >= 0x20 && c < 0x7f) out += raw[i];
+  }
+  out = out.trim();
+  if (!out) return null;
+  return out.length > 40 ? out.slice(0, 40) : out;
+}
+
+// An eth_call address result is a left-padded 32-byte word; the address is the
+// trailing 20 bytes. Returns a lowercased 0x address or null.
+function addrFromResult(hex: string | undefined): string | null {
+  if (!hex || hex === '0x' || hex.length < 42) return null;
+  const a = `0x${hex.slice(-40)}`.toLowerCase();
+  return /^0x[0-9a-f]{40}$/.test(a) ? a : null;
 }
 
 export class EvmFlowFeed extends EventEmitter {
-  private token = '';
+  private apiKey = '';
   private chain: EvmFlowChain = 'ethereum';
   private ws: WebSocket | null = null;
   private running = false;
   private tokens = new Map<string, TokenAgg>();
+  private pairInfo = new Map<string, PairInfo>();    // resolved WETH pairs
+  private pairIgnore = new Set<string>();            // resolved non-WETH pairs
+  private pairPending = new Set<string>();           // in-flight resolutions
+  private pairBuffer = new Map<string, RawSwap[]>(); // swaps awaiting resolution
   private emitTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private ethPriceTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
   private ethPriceUsd: number | null = null;
 
-  start(token: string, chain: EvmFlowChain): void {
+  start(apiKey: string, chain: EvmFlowChain): void {
     if (this.running) return;
-    if (!token) {
+    if (!apiKey) {
       this.emit('status', 'no-key');
       return;
     }
-    this.token = token;
+    this.apiKey = apiKey;
     this.chain = chain;
     this.running = true;
     this.reconnectAttempts = 0;
     this.connect();
     this.emitTimer = setInterval(() => this.emitSnapshot(), EMIT_INTERVAL_MS);
+    void this.refreshEthPrice();
+    this.ethPriceTimer = setInterval(() => void this.refreshEthPrice(), ETH_PRICE_POLL_MS);
   }
 
   stop(): void {
     this.running = false;
     if (this.emitTimer) { clearInterval(this.emitTimer); this.emitTimer = null; }
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    if (this.ethPriceTimer) { clearInterval(this.ethPriceTimer); this.ethPriceTimer = null; }
     if (this.ws) {
       try { this.ws.removeAllListeners(); this.ws.close(); } catch { /* ignore */ }
       this.ws = null;
     }
     this.tokens.clear();
+    this.pairInfo.clear();
+    this.pairIgnore.clear();
+    this.pairPending.clear();
+    this.pairBuffer.clear();
     this.ethPriceUsd = null;
     console.log('[evmflow] stopped');
   }
@@ -135,12 +172,12 @@ export class EvmFlowFeed extends EventEmitter {
   private connect(): void {
     if (!this.running) return;
     this.emit('status', 'connecting');
-    const url = `${ENDPOINT}?token=${encodeURIComponent(this.token)}`;
-    console.log(`[evmflow] connecting to Bitquery stream (${this.chain})`);
+    const { sub } = CHAIN_CONFIG[this.chain];
+    console.log(`[evmflow] connecting to Alchemy logs stream (${this.chain})`);
 
     let ws: WebSocket;
     try {
-      ws = new WebSocket(url, ['graphql-ws']);
+      ws = new WebSocket(ALCHEMY_WS(sub, this.apiKey));
     } catch (e) {
       console.log(`[evmflow] connect threw: ${(e as Error).message}`);
       this.scheduleReconnect();
@@ -149,47 +186,44 @@ export class EvmFlowFeed extends EventEmitter {
     this.ws = ws;
 
     ws.on('open', () => {
-      console.log('[evmflow] socket open → connection_init');
-      ws.send(JSON.stringify({ type: 'connection_init' }));
+      console.log('[evmflow] socket open -> eth_subscribe(logs)');
+      this.reconnectAttempts = 0;
+      this.emit('status', 'connected');
+      ws.send(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_subscribe',
+        params: ['logs', { topics: [SWAP_TOPIC] }]
+      }));
     });
 
     ws.on('message', (raw: WebSocket.RawData) => {
-      let msg: { type?: string; id?: string; payload?: unknown };
+      let msg: {
+        id?: number;
+        result?: unknown;
+        method?: string;
+        error?: { message?: string };
+        params?: { result?: { address?: string; data?: string; removed?: boolean } };
+      };
       try {
         msg = JSON.parse(raw.toString());
       } catch {
         return;
       }
-      switch (msg.type) {
-        case 'connection_ack': {
-          console.log('[evmflow] connection_ack → starting subscription');
-          this.reconnectAttempts = 0;
-          this.emit('status', 'connected');
-          const query = buildQuery(CHAIN_CONFIG[this.chain].network);
-          ws.send(JSON.stringify({ type: 'start', id: '1', payload: { query } }));
-          break;
+      if (msg.error) {
+        console.log(`[evmflow] rpc error: ${msg.error.message}`);
+        this.emit('status', 'error');
+        return;
+      }
+      if (msg.id === 1 && msg.result !== undefined) {
+        console.log(`[evmflow] subscribed (id=${String(msg.result)})`);
+        return;
+      }
+      if (msg.method === 'eth_subscription') {
+        const log = msg.params?.result;
+        if (log && !log.removed && log.address && log.data) {
+          this.handleLog(log.address.toLowerCase(), log.data);
         }
-        case 'data':
-        case 'next': {
-          const payload = msg.payload as { data?: { EVM?: { DEXTrades?: BqTrade[] } } } | undefined;
-          const trades = payload?.data?.EVM?.DEXTrades;
-          if (Array.isArray(trades)) {
-            for (const t of trades) this.handleTrade(t);
-          }
-          break;
-        }
-        case 'error':
-        case 'connection_error':
-          console.log(`[evmflow] server error: ${JSON.stringify(msg.payload)}`);
-          this.emit('status', 'error');
-          break;
-        case 'complete':
-          console.log('[evmflow] subscription complete');
-          break;
-        case 'ka':
-        case 'connection_keep_alive':
-        default:
-          break;
       }
     });
 
@@ -222,57 +256,160 @@ export class EvmFlowFeed extends EventEmitter {
     }, delay);
   }
 
-  private handleTrade(t: BqTrade): void {
-    const buy = t.Trade?.Buy;
-    const sell = t.Trade?.Sell;
-    if (!buy?.Currency || !sell?.Currency) return;
+  // A Uniswap V2 Swap log. `data` is 4 packed uint256:
+  // amount0In, amount1In, amount0Out, amount1Out.
+  private handleLog(pair: string, data: string): void {
+    const d = data.startsWith('0x') ? data.slice(2) : data;
+    if (d.length < 256) return;
+    const swap: RawSwap = {
+      amount0In: hexToBig(`0x${d.slice(0, 64)}`),
+      amount1In: hexToBig(`0x${d.slice(64, 128)}`),
+      amount0Out: hexToBig(`0x${d.slice(128, 192)}`),
+      amount1Out: hexToBig(`0x${d.slice(192, 256)}`),
+      t: Date.now()
+    };
 
-    const weth = CHAIN_CONFIG[this.chain].weth;
-    const buyIsWeth = isWeth(buy.Currency.SmartContract, buy.Currency.Symbol, weth);
-    const sellIsWeth = isWeth(sell.Currency.SmartContract, sell.Currency.Symbol, weth);
-    if (buyIsWeth === sellIsWeth) return; // token↔token or non-WETH pair — skip
+    if (this.pairIgnore.has(pair)) return;
+    const info = this.pairInfo.get(pair);
+    if (info) {
+      this.applySwap(info, swap);
+      return;
+    }
+    // Unknown pair: buffer this swap and kick off a one-time resolution.
+    let buf = this.pairBuffer.get(pair);
+    if (!buf) { buf = []; this.pairBuffer.set(pair, buf); }
+    if (buf.length < MAX_BUFFER_PER_PAIR) buf.push(swap);
+    if (!this.pairPending.has(pair) && this.pairPending.size < MAX_PENDING) {
+      void this.resolvePair(pair);
+    }
+  }
 
-    // Token bought (ETH in): token on Buy side, WETH on Sell side.
-    // Token sold  (ETH out): token on Sell side, WETH on Buy side.
-    const isBuy = sellIsWeth;
-    const tokenSide = isBuy ? buy : sell;
-    const ethSide = isBuy ? sell : buy;
+  private applySwap(info: PairInfo, s: RawSwap): void {
+    // WETH side amounts.
+    const wethIn = info.wethIsToken0 ? s.amount0In : s.amount1In;
+    const wethOut = info.wethIsToken0 ? s.amount0Out : s.amount1Out;
+    const tokIn = info.wethIsToken0 ? s.amount1In : s.amount0In;
+    const tokOut = info.wethIsToken0 ? s.amount1Out : s.amount0Out;
 
-    const address = tokenSide.Currency?.SmartContract;
-    if (!address) return;
-    const ethAmount = n(ethSide.Amount);
-    if (ethAmount <= 0) return;
+    // Trader pays WETH (wethIn>0) -> buying the token. Trader receives WETH
+    // (wethOut>0) -> selling the token.
+    const isBuy = wethIn > 0n;
+    const wethRaw = isBuy ? wethIn : wethOut;
+    if (wethRaw <= 0n) return;
+    const tokRaw = isBuy ? tokOut : tokIn;
 
-    const tsMs = t.Block?.Time ? new Date(t.Block.Time).getTime() : Date.now();
+    const eth = Number(wethRaw) / 1e18;
+    if (!(eth > 0)) return;
 
-    // Derive token USD price and ETH/USD from the trade's USD values.
-    const tokenAmount = n(tokenSide.Amount);
-    const tokenUsd = n(tokenSide.AmountInUSD);
-    const priceUsd = tokenAmount > 0 && tokenUsd > 0 ? tokenUsd / tokenAmount : null;
-    const ethUsd = n(ethSide.AmountInUSD);
-    if (ethUsd > 0 && ethAmount > 0) this.ethPriceUsd = ethUsd / ethAmount;
+    const tokAmt = info.decimals >= 0 ? Number(tokRaw) / 10 ** info.decimals : 0;
+    const priceEth = tokAmt > 0 ? eth / tokAmt : null;
 
-    let agg = this.tokens.get(address);
+    let agg = this.tokens.get(info.token);
     if (!agg) {
       if (this.tokens.size >= MAX_TOKENS) this.evictOldest();
       agg = {
-        address,
-        symbol: tokenSide.Currency?.Symbol ?? null,
-        name: tokenSide.Currency?.Name ?? null,
+        address: info.token,
+        symbol: info.symbol,
+        name: info.name,
         trades: [],
-        firstSeen: tsMs,
-        lastTrade: tsMs,
-        priceUsd
+        firstSeen: s.t,
+        lastTrade: s.t,
+        priceEth
       };
-      this.tokens.set(address, agg);
+      this.tokens.set(info.token, agg);
     }
-    if (agg.symbol === null && tokenSide.Currency?.Symbol) agg.symbol = tokenSide.Currency.Symbol;
-    if (agg.name === null && tokenSide.Currency?.Name) agg.name = tokenSide.Currency.Name;
-    if (priceUsd !== null) agg.priceUsd = priceUsd;
-    agg.lastTrade = tsMs;
-    agg.trades.push({ t: tsMs, eth: ethAmount, isBuy });
+    if (agg.symbol === null && info.symbol) agg.symbol = info.symbol;
+    if (agg.name === null && info.name) agg.name = info.name;
+    if (priceEth !== null) agg.priceEth = priceEth;
+    agg.lastTrade = s.t;
+    agg.trades.push({ t: s.t, eth, isBuy });
     if (agg.trades.length > MAX_TRADES_PER_TOKEN) {
       agg.trades.splice(0, agg.trades.length - MAX_TRADES_PER_TOKEN);
+    }
+  }
+
+  // Resolve a pair's tokens once (token0/token1 -> WETH side -> token metadata),
+  // then flush any swaps buffered while it was resolving.
+  private async resolvePair(pair: string): Promise<void> {
+    this.pairPending.add(pair);
+    try {
+      const weth = CHAIN_CONFIG[this.chain].weth;
+      const [t0, t1] = await this.ethCallBatch(pair, [SEL_TOKEN0, SEL_TOKEN1]);
+      const token0 = addrFromResult(t0);
+      const token1 = addrFromResult(t1);
+      if (!token0 || !token1) throw new Error('no tokens');
+
+      const wethIsToken0 = token0 === weth;
+      const wethIsToken1 = token1 === weth;
+      if (!wethIsToken0 && !wethIsToken1) {
+        // Not a WETH pair — remember and forget.
+        this.pairIgnore.add(pair);
+        this.pairBuffer.delete(pair);
+        return;
+      }
+      const tokenAddr = wethIsToken0 ? token1 : token0;
+      const [decRes, symRes, nameRes] = await this.ethCallBatch(tokenAddr, [SEL_DECIMALS, SEL_SYMBOL, SEL_NAME]);
+      const decimals = decRes && decRes !== '0x' ? Number(hexToBig(decRes)) : 18;
+
+      const info: PairInfo = {
+        token: tokenAddr,
+        wethIsToken0,
+        decimals: Number.isFinite(decimals) && decimals >= 0 && decimals <= 36 ? decimals : 18,
+        symbol: decodeString(symRes),
+        name: decodeString(nameRes)
+      };
+      if (this.pairInfo.size < MAX_PAIRS) this.pairInfo.set(pair, info);
+
+      const buf = this.pairBuffer.get(pair);
+      if (buf) { for (const s of buf) this.applySwap(info, s); }
+      this.pairBuffer.delete(pair);
+    } catch {
+      // Leave unresolved; a future swap on this pair will retry. Drop the
+      // buffer so it can't grow unbounded.
+      this.pairBuffer.delete(pair);
+    } finally {
+      this.pairPending.delete(pair);
+    }
+  }
+
+  // Batched eth_call against the chain's Alchemy HTTP endpoint.
+  private async ethCallBatch(to: string, selectors: string[]): Promise<(string | undefined)[]> {
+    const { sub } = CHAIN_CONFIG[this.chain];
+    const body = selectors.map((data, i) => ({
+      jsonrpc: '2.0',
+      id: i,
+      method: 'eth_call',
+      params: [{ to, data }, 'latest']
+    }));
+    const res = await fetch(ALCHEMY_HTTP(sub, this.apiKey), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error(`http ${res.status}`);
+    const json = (await res.json()) as { id?: number; result?: string }[];
+    const out: (string | undefined)[] = new Array(selectors.length).fill(undefined);
+    if (Array.isArray(json)) {
+      for (const r of json) {
+        if (typeof r?.id === 'number' && r.id >= 0 && r.id < out.length) out[r.id] = r.result;
+      }
+    }
+    return out;
+  }
+
+  private async refreshEthPrice(): Promise<void> {
+    try {
+      const id = CHAIN_CONFIG[this.chain].cgId;
+      const res = await fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`,
+        { headers: { accept: 'application/json' } }
+      );
+      if (!res.ok) return;
+      const json = (await res.json()) as Record<string, { usd?: number }>;
+      const px = json?.[id]?.usd;
+      if (typeof px === 'number' && px > 0) this.ethPriceUsd = px;
+    } catch {
+      // keep last known price
     }
   }
 
@@ -318,6 +455,10 @@ export class EvmFlowFeed extends EventEmitter {
       let run = 0;
       for (const v of buckets) { run += v; spark.push(run); }
 
+      const priceUsd = agg.priceEth !== null && this.ethPriceUsd !== null
+        ? agg.priceEth * this.ethPriceUsd
+        : null;
+
       computed.push({
         address,
         symbol: agg.symbol,
@@ -328,7 +469,7 @@ export class EvmFlowFeed extends EventEmitter {
         txCount: agg.trades.length,
         buyCount,
         sellCount,
-        priceUsd: agg.priceUsd,
+        priceUsd,
         firstSeen: Math.floor(agg.firstSeen / 1000),
         lastTrade: Math.floor(agg.lastTrade / 1000),
         spark

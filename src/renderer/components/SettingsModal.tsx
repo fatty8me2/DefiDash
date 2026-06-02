@@ -6,7 +6,6 @@ const DEFAULTS: AppSettings = {
   heliusKey: '',
   etherscanKey: '',
   cieloKey: '',
-  bitqueryToken: '',
   defaultBuyers: 50,
   feedV2Enabled: true,
   feedVerifiedEnabled: true,
@@ -107,21 +106,6 @@ export default function SettingsModal({
               <>
                 Adds smart-money PnL & win-rate to the wallet Score column. Get one at{' '}
                 <a href="https://app.cielo.finance" target="_blank" rel="noreferrer" className="text-emerald-400 hover:underline">app.cielo.finance</a>.
-              </>
-            }
-          />
-
-          <Field
-            label="Bitquery Token (optional)"
-            value={s.bitqueryToken}
-            onChange={(v) => set('bitqueryToken', v)}
-            placeholder="e.g. ory_at_…"
-            help={
-              <>
-                Powers the live <span className="text-slate-300">Pump Flow</span> page (pump.fun net-inflow stream). Create a free
-                OAuth access token at{' '}
-                <a href="https://account.bitquery.io/user/api_v2/access_tokens" target="_blank" rel="noreferrer" className="text-emerald-400 hover:underline">account.bitquery.io</a>.
-                The stream uses your monthly quota, so the page only runs while it's open.
               </>
             }
           />

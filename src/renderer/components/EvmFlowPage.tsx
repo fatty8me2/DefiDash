@@ -4,7 +4,7 @@ import CopyButton from './CopyButton';
 import DexScreenerButton from './DexScreenerButton';
 
 interface Props {
-  hasBitqueryToken: boolean;
+  hasAlchemy: boolean;
   onClickContract: (address: string) => void; // ETH-mainnet buyer lookup
   onOpenSettings: () => void;
 }
@@ -22,14 +22,14 @@ const CHAINS: { key: EvmFlowChain; label: string }[] = [
 
 const PAGE_SIZE = 24;
 
-export default function EvmFlowPage({ hasBitqueryToken, onClickContract, onOpenSettings }: Props) {
+export default function EvmFlowPage({ hasAlchemy, onClickContract, onOpenSettings }: Props) {
   const [chain, setChain] = useState<EvmFlowChain>('ethereum');
   const [tab, setTab] = useState<FlowTab>('top');
   const [snap, setSnap] = useState<EvmFlowSnapshot | null>(null);
   const [status, setStatus] = useState<string>('idle');
 
   useEffect(() => {
-    if (!hasBitqueryToken) return;
+    if (!hasAlchemy) return;
     setSnap(null); // clear stale data when switching chains
     window.api.startEvmFlow(chain);
     const offUpdate = window.api.onEvmFlowUpdate((s) => {
@@ -42,24 +42,22 @@ export default function EvmFlowPage({ hasBitqueryToken, onClickContract, onOpenS
       offStatus();
       window.api.stopEvmFlow();
     };
-  }, [hasBitqueryToken, chain]);
+  }, [hasAlchemy, chain]);
 
   const rows = useMemo(() => sortForTab(snap?.tokens ?? [], tab).slice(0, PAGE_SIZE), [snap, tab]);
 
-  if (!hasBitqueryToken) {
+  if (!hasAlchemy) {
     return (
       <div className="max-w-2xl mx-auto mt-12 border border-slate-800 rounded-lg p-6 bg-slate-900/40">
-        <h2 className="text-lg font-semibold text-slate-100">ETH Flow needs a Bitquery token</h2>
+        <h2 className="text-lg font-semibold text-slate-100">ETH Flow needs an Alchemy key</h2>
         <p className="text-sm text-slate-300 mt-2">
           This page streams live Uniswap V2 trades on Ethereum and Base, ranking tokens by net ETH
-          inflow over the last 15 minutes. It uses the same Bitquery token as the Pump Flow page.
+          inflow over the last 15 minutes. It subscribes directly to on-chain swap logs via your
+          Alchemy key — no extra service required.
         </p>
         <p className="text-sm text-slate-300 mt-4">
-          Paste an OAuth access token (starts with <span className="mono">ory_at_…</span>) into{' '}
-          <button onClick={onOpenSettings} className="underline text-emerald-400 hover:text-emerald-300">Settings</button> → Bitquery Token.
-        </p>
-        <p className="text-xs text-slate-500 mt-4">
-          Heads-up: the live stream draws from your monthly Bitquery quota, so this page only streams while it's open.
+          Add your key in{' '}
+          <button onClick={onOpenSettings} className="underline text-emerald-400 hover:text-emerald-300">Settings</button> → Alchemy API Key.
         </p>
       </div>
     );
@@ -119,7 +117,7 @@ export default function EvmFlowPage({ hasBitqueryToken, onClickContract, onOpenS
       {rows.length === 0 ? (
         <div className="text-sm text-slate-500 border border-slate-800 rounded px-4 py-10 text-center">
           {status === 'error'
-            ? 'Stream error — check your Bitquery token in Settings. Retrying…'
+            ? 'Stream error — check your Alchemy key in Settings. Retrying…'
             : chain === 'base'
               ? 'Waiting for Uniswap V2 trades on Base… (V2 is quiet on Base — try Ethereum for more activity.)'
               : 'Waiting for the first Uniswap V2 trades to roll in…'}

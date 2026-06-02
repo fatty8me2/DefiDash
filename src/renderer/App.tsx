@@ -18,7 +18,6 @@ interface ConfigStatus {
   hasHelius: boolean;
   hasEtherscan: boolean;
   hasCielo: boolean;
-  hasBitquery: boolean;
 }
 
 type View = 'dashboard' | 'flow' | 'evmflow';
@@ -137,7 +136,7 @@ export default function App() {
           />
         ) : view === 'evmflow' ? (
           <EvmFlowPage
-            hasBitqueryToken={!!config?.hasBitquery}
+            hasAlchemy={!!config?.hasAlchemy}
             onClickContract={(addr) => {
               setView('dashboard');
               runLookup(addr);

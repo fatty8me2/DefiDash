@@ -10,7 +10,6 @@ export const DEFAULTS: AppSettings = {
   heliusKey: '',
   etherscanKey: '',
   cieloKey: '',
-  bitqueryToken: '',
   defaultBuyers: 50,
   feedV2Enabled: true,
   feedVerifiedEnabled: true,
@@ -44,7 +43,6 @@ function coerce(parsed: Record<string, unknown>): AppSettings {
     heliusKey: str(parsed.heliusKey, DEFAULTS.heliusKey),
     etherscanKey: str(parsed.etherscanKey, DEFAULTS.etherscanKey),
     cieloKey: str(parsed.cieloKey, DEFAULTS.cieloKey),
-    bitqueryToken: str(parsed.bitqueryToken, DEFAULTS.bitqueryToken),
     defaultBuyers: num(parsed.defaultBuyers, DEFAULTS.defaultBuyers),
     feedV2Enabled: bool(parsed.feedV2Enabled, DEFAULTS.feedV2Enabled),
     feedVerifiedEnabled: bool(parsed.feedVerifiedEnabled, DEFAULTS.feedVerifiedEnabled),
@@ -75,8 +73,7 @@ export function loadSettings(): Settings {
     alchemyKey: process.env.ALCHEMY_API_KEY ?? DEFAULTS.alchemyKey,
     heliusKey: process.env.HELIUS_API_KEY ?? DEFAULTS.heliusKey,
     etherscanKey: process.env.ETHERSCAN_API_KEY ?? DEFAULTS.etherscanKey,
-    cieloKey: process.env.CIELO_API_KEY ?? DEFAULTS.cieloKey,
-    bitqueryToken: process.env.BITQUERY_TOKEN ?? DEFAULTS.bitqueryToken
+    cieloKey: process.env.CIELO_API_KEY ?? DEFAULTS.cieloKey
   };
 }
 
@@ -87,7 +84,6 @@ export function saveSettings(s: Settings): void {
   clean.heliusKey = clean.heliusKey.trim();
   clean.etherscanKey = clean.etherscanKey.trim();
   clean.cieloKey = clean.cieloKey.trim();
-  clean.bitqueryToken = clean.bitqueryToken.trim();
   // Clamp numerics to sane ranges.
   clean.defaultBuyers = [50, 100, 200].includes(clean.defaultBuyers) ? clean.defaultBuyers : 50;
   clean.trendingRefreshSec = Math.max(10, Math.min(300, Math.round(clean.trendingRefreshSec)));

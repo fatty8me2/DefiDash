@@ -33,8 +33,7 @@ function getKeys() {
     alchemyKey: s.alchemyKey,
     heliusKey: s.heliusKey,
     etherscanKey: s.etherscanKey,
-    cieloKey: s.cieloKey,
-    bitqueryToken: s.bitqueryToken
+    cieloKey: s.cieloKey
   };
 }
 
@@ -216,8 +215,7 @@ ipcMain.handle('config:status', () => {
     hasAlchemy: !!k.alchemyKey,
     hasHelius: !!k.heliusKey,
     hasEtherscan: !!k.etherscanKey,
-    hasCielo: !!k.cieloKey,
-    hasBitquery: !!k.bitqueryToken
+    hasCielo: !!k.cieloKey
   };
 });
 
@@ -294,8 +292,10 @@ function startEvmFlow(chain: EvmFlowChain): void {
   // Switching chains: tear down the old stream first.
   if (evmFlowStarted) evmFlowFeed.stop();
   evmFlowChain = chain;
-  const token = getKeys().bitqueryToken;
-  evmFlowFeed.start(token, chain);
+  // EVM Flow now streams directly from Alchemy (eth_subscribe logs on the
+  // Uniswap V2 Swap topic) and decodes trades locally — no Bitquery involved.
+  const alchemyKey = getKeys().alchemyKey;
+  evmFlowFeed.start(alchemyKey, chain);
   evmFlowStarted = true;
 }
 function stopEvmFlow(): void {
@@ -303,8 +303,8 @@ function stopEvmFlow(): void {
   evmFlowStarted = false;
 }
 
-// Like Pump Flow, the EVM stream is page-scoped to conserve Bitquery quota.
-// The renderer passes which chain (ethereum/base) to stream.
+// Like Pump Flow, the EVM stream holds an open Alchemy WebSocket, so it's
+// page-scoped. The renderer passes which chain (ethereum/base) to stream.
 ipcMain.handle('evmflow:start', (_e, chain: EvmFlowChain) => { startEvmFlow(chain); });
 ipcMain.handle('evmflow:stop', () => { stopEvmFlow(); });
 
