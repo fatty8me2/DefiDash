@@ -7,7 +7,6 @@ export interface AppSettings {
   heliusKey: string;
   etherscanKey: string;
   cieloKey: string;
-  bitqueryToken: string;          // Bitquery OAuth access token (ory_at_…) for the Pump Flow stream
   // Lookup
   defaultBuyers: number;          // 50 | 100 | 200 — buyers fetched per lookup
   // Feed controls
@@ -198,7 +197,7 @@ export interface BundleAnalysis {
   note: string | null;
 }
 
-// --- Pump Flow (live pump.fun net-inflow tracker via Bitquery) ---
+// --- Pump Flow (live pump.fun net-inflow tracker via Helius logsSubscribe) ---
 export type FlowTab = 'top' | 'early' | 'dipping';
 
 export interface FlowToken {
@@ -226,7 +225,7 @@ export interface FlowSnapshot {
   updatedAt: number;              // unix sec
 }
 
-// --- EVM Flow (live Uniswap V2 net-ETH-inflow tracker via Bitquery, ETH + Base) ---
+// --- EVM Flow (live Uniswap V2 net-ETH-inflow tracker via Alchemy logs, ETH + Base) ---
 export type EvmFlowChain = 'ethereum' | 'base';
 
 export interface EvmFlowToken {
