@@ -14,10 +14,11 @@ import { loadSettings, saveSettings, type Settings } from './settings';
 import { V2Feed } from './feeds/v2Feed';
 import { VerifiedFeed } from './feeds/verifiedFeed';
 import { PumpFlowFeed } from './feeds/pumpFlow';
+import { EvmFlowFeed } from './feeds/evmFlow';
 import { initAutoUpdates, checkForUpdatesManual } from './updater';
 import { fetchTrending } from './feeds/trending';
 import { analyzeLaunch } from './enrichment/launch';
-import type { BuyerRow, Chain, DevWalletInfo, FlowSnapshot, HoneypotReport, LiveFeedItem, LookupResult, TrendingList, WalletDetail } from '../shared/types';
+import type { BuyerRow, Chain, DevWalletInfo, EvmFlowChain, EvmFlowSnapshot, FlowSnapshot, HoneypotReport, LiveFeedItem, LookupResult, TrendingList, WalletDetail } from '../shared/types';
 
 dotenv.config();
 
@@ -40,9 +41,12 @@ function getKeys() {
 const v2Feed = new V2Feed();
 const verifiedFeed = new VerifiedFeed();
 const pumpFlowFeed = new PumpFlowFeed();
+const evmFlowFeed = new EvmFlowFeed();
 let mainWindow: BrowserWindow | null = null;
 let feedsStarted = false;
 let flowStarted = false;
+let evmFlowStarted = false;
+let evmFlowChain: EvmFlowChain = 'ethereum';
 
 function broadcast(channel: string, payload: unknown): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -84,6 +88,9 @@ verifiedFeed.on('status', (s: string) => broadcast('feed:verifiedstatus', s));
 
 pumpFlowFeed.on('update', (snap: FlowSnapshot) => broadcast('flow:update', snap));
 pumpFlowFeed.on('status', (s: string) => broadcast('flow:status', s));
+
+evmFlowFeed.on('update', (snap: EvmFlowSnapshot) => broadcast('evmflow:update', snap));
+evmFlowFeed.on('status', (s: string) => broadcast('evmflow:status', s));
 
 console.log('[main] feed modules initialized');
 
@@ -231,6 +238,12 @@ ipcMain.handle('settings:save', (_e, s: Settings) => {
     stopFlow();
     startFlow();
   }
+  // Same for the EVM flow stream — preserve the current chain selection.
+  if (evmFlowStarted) {
+    const chain = evmFlowChain;
+    stopEvmFlow();
+    startEvmFlow(chain);
+  }
 });
 
 function startFeeds(): void {
@@ -274,6 +287,25 @@ function stopFlow(): void {
 ipcMain.handle('flow:start', () => { startFlow(); });
 ipcMain.handle('flow:stop', () => { stopFlow(); });
 
+function startEvmFlow(chain: EvmFlowChain): void {
+  if (evmFlowStarted && chain === evmFlowChain) return;
+  // Switching chains: tear down the old stream first.
+  if (evmFlowStarted) evmFlowFeed.stop();
+  evmFlowChain = chain;
+  const token = getKeys().bitqueryToken;
+  evmFlowFeed.start(token, chain);
+  evmFlowStarted = true;
+}
+function stopEvmFlow(): void {
+  evmFlowFeed.stop();
+  evmFlowStarted = false;
+}
+
+// Like Pump Flow, the EVM stream is page-scoped to conserve Bitquery quota.
+// The renderer passes which chain (ethereum/base) to stream.
+ipcMain.handle('evmflow:start', (_e, chain: EvmFlowChain) => { startEvmFlow(chain); });
+ipcMain.handle('evmflow:stop', () => { stopEvmFlow(); });
+
 ipcMain.handle('updates:check', () => checkForUpdatesManual());
 ipcMain.handle('app:version', () => app.getVersion());
 
@@ -293,6 +325,7 @@ app.on('window-all-closed', () => {
   v2Feed.stop();
   verifiedFeed.stop();
   pumpFlowFeed.stop();
+  evmFlowFeed.stop();
   if (process.platform !== 'darwin') app.quit();
 });
 

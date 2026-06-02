@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppSettings, BundleAnalysis, BuyerRow, Chain, DevWalletInfo, FlowSnapshot, HoneypotReport, LiveFeedItem, LookupResult, SniperAnalysis, TrendingList, TrendingToken, WalletDetail } from '../shared/types';
+import type { AppSettings, BundleAnalysis, BuyerRow, Chain, DevWalletInfo, EvmFlowChain, EvmFlowSnapshot, FlowSnapshot, HoneypotReport, LiveFeedItem, LookupResult, SniperAnalysis, TrendingList, TrendingToken, WalletDetail } from '../shared/types';
 
 export type SettingsShape = AppSettings;
 
@@ -56,7 +56,13 @@ const api = {
   startFlow: (): Promise<void> => ipcRenderer.invoke('flow:start'),
   stopFlow: (): Promise<void> => ipcRenderer.invoke('flow:stop'),
   onFlowUpdate: (cb: (snap: FlowSnapshot) => void): Unsubscribe => onChannel('flow:update', cb),
-  onFlowStatus: (cb: (status: string) => void): Unsubscribe => onChannel('flow:status', cb)
+  onFlowStatus: (cb: (status: string) => void): Unsubscribe => onChannel('flow:status', cb),
+
+  // EVM Flow (live Uniswap V2 net-ETH-inflow stream, ETH + Base)
+  startEvmFlow: (chain: EvmFlowChain): Promise<void> => ipcRenderer.invoke('evmflow:start', chain),
+  stopEvmFlow: (): Promise<void> => ipcRenderer.invoke('evmflow:stop'),
+  onEvmFlowUpdate: (cb: (snap: EvmFlowSnapshot) => void): Unsubscribe => onChannel('evmflow:update', cb),
+  onEvmFlowStatus: (cb: (status: string) => void): Unsubscribe => onChannel('evmflow:status', cb)
 };
 
 contextBridge.exposeInMainWorld('api', api);

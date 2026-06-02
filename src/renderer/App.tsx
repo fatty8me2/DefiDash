@@ -7,7 +7,9 @@ import DevWalletPanel from './components/DevWalletPanel';
 import LiveFeeds from './components/LiveFeeds';
 import LaunchAnalysisPanel from './components/LaunchAnalysisPanel';
 import PumpFlowPage from './components/PumpFlowPage';
+import EvmFlowPage from './components/EvmFlowPage';
 import CopyButton from './components/CopyButton';
+import DexScreenerButton from './components/DexScreenerButton';
 import type { AppSettings, BuyerRow, DevWalletInfo, HoneypotReport, LookupResult } from '../shared/types';
 import { isFreshWallet } from './lib/freshWallet';
 
@@ -19,7 +21,7 @@ interface ConfigStatus {
   hasBitquery: boolean;
 }
 
-type View = 'dashboard' | 'flow';
+type View = 'dashboard' | 'flow' | 'evmflow';
 
 export default function App() {
   const [result, setResult] = useState<LookupResult | null>(null);
@@ -103,6 +105,7 @@ export default function App() {
           <nav className="flex gap-1">
             <NavTab label="Dashboard" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
             <NavTab label="Pump Flow" active={view === 'flow'} onClick={() => setView('flow')} />
+            <NavTab label="ETH Flow" active={view === 'evmflow'} onClick={() => setView('evmflow')} />
           </nav>
         </div>
         <div className="flex items-center gap-3">
@@ -129,6 +132,15 @@ export default function App() {
             onClickContract={(mint) => {
               setView('dashboard');
               runLookup(mint);
+            }}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        ) : view === 'evmflow' ? (
+          <EvmFlowPage
+            hasBitqueryToken={!!config?.hasBitquery}
+            onClickContract={(addr) => {
+              setView('dashboard');
+              runLookup(addr);
             }}
             onOpenSettings={() => setSettingsOpen(true)}
           />
@@ -239,6 +251,7 @@ function ResultsHeader({ result, onExpand }: { result: LookupResult; onExpand: (
       <span className="text-slate-100 font-medium">{result.tokenName ?? '—'}</span>
       <span className="text-slate-500">({result.tokenSymbol ?? '?'})</span>
       <CopyButton value={result.contract} title="Copy token contract" />
+      <DexScreenerButton address={result.contract} chain={result.chain} title="Open on DexScreener" />
       <span className="text-slate-600">·</span>
       <span className="uppercase text-xs tracking-wider text-slate-400">{result.chain}</span>
       <span className="text-slate-600">·</span>

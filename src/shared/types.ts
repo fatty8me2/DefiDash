@@ -225,3 +225,30 @@ export interface FlowSnapshot {
   solPriceUsd: number | null;     // derived from trade USD values
   updatedAt: number;              // unix sec
 }
+
+// --- EVM Flow (live Uniswap V2 net-ETH-inflow tracker via Bitquery, ETH + Base) ---
+export type EvmFlowChain = 'ethereum' | 'base';
+
+export interface EvmFlowToken {
+  address: string;                // ERC-20 contract address
+  symbol: string | null;
+  name: string | null;
+  netInflowEth: number;           // buy ETH − sell ETH over the window (WETH-paired trades)
+  buyVolEth: number;              // gross ETH spent buying over the window
+  sellVolEth: number;             // gross ETH received selling over the window
+  txCount: number;                // trades in the window
+  buyCount: number;
+  sellCount: number;
+  priceUsd: number | null;        // last observed token price (USD)
+  firstSeen: number;              // unix sec — earliest trade we observed
+  lastTrade: number;              // unix sec — most recent trade
+  spark: number[];                // cumulative net-inflow series across the window
+}
+
+export interface EvmFlowSnapshot {
+  chain: EvmFlowChain;            // which network this snapshot is for
+  tokens: EvmFlowToken[];         // active tokens in the window, unsorted (UI derives tabs)
+  windowMinutes: number;
+  ethPriceUsd: number | null;     // derived from WETH trade USD values
+  updatedAt: number;              // unix sec
+}
