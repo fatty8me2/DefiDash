@@ -128,7 +128,7 @@ export default function App() {
       <main className="flex-1 overflow-auto px-6 py-4 space-y-4">
         {view === 'flow' ? (
           <PumpFlowPage
-            hasBitqueryToken={!!config?.hasBitquery}
+            hasHelius={!!config?.hasHelius}
             onClickContract={(mint) => {
               setView('dashboard');
               runLookup(mint);

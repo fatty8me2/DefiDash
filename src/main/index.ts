@@ -233,7 +233,7 @@ ipcMain.handle('settings:save', (_e, s: Settings) => {
   verifiedFeed.stop();
   feedsStarted = false;
   startFeeds();
-  // If the Pump Flow stream is live, restart it so a new Bitquery token applies.
+  // If the Pump Flow stream is live, restart it so a new Helius key applies.
   if (flowStarted) {
     stopFlow();
     startFlow();
@@ -273,8 +273,10 @@ ipcMain.handle('feeds:stop', () => {
 
 function startFlow(): void {
   if (flowStarted) return;
-  const token = getKeys().bitqueryToken;
-  pumpFlowFeed.start(token);
+  // Pump Flow now streams directly from Helius (logsSubscribe on the pump.fun
+  // program) and decodes trades locally — no Bitquery quota involved.
+  const heliusKey = getKeys().heliusKey;
+  pumpFlowFeed.start(heliusKey);
   flowStarted = true;
 }
 function stopFlow(): void {
@@ -282,8 +284,8 @@ function stopFlow(): void {
   flowStarted = false;
 }
 
-// The Pump Flow stream consumes Bitquery quota, so it runs only while the user
-// has the page open — started/stopped from the renderer on view change.
+// The Pump Flow stream holds an open Helius WebSocket, so it runs only while the
+// user has the page open — started/stopped from the renderer on view change.
 ipcMain.handle('flow:start', () => { startFlow(); });
 ipcMain.handle('flow:stop', () => { stopFlow(); });
 

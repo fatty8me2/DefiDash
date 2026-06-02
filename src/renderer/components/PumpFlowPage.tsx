@@ -4,7 +4,7 @@ import CopyButton from './CopyButton';
 import DexScreenerButton from './DexScreenerButton';
 
 interface Props {
-  hasBitqueryToken: boolean;
+  hasHelius: boolean;
   onClickContract: (mint: string) => void;
   onOpenSettings: () => void;
 }
@@ -17,13 +17,13 @@ const TABS: { key: FlowTab; label: string; hint: string }[] = [
 
 const PAGE_SIZE = 24;
 
-export default function PumpFlowPage({ hasBitqueryToken, onClickContract, onOpenSettings }: Props) {
+export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSettings }: Props) {
   const [tab, setTab] = useState<FlowTab>('top');
   const [snap, setSnap] = useState<FlowSnapshot | null>(null);
   const [status, setStatus] = useState<string>('idle');
 
   useEffect(() => {
-    if (!hasBitqueryToken) return;
+    if (!hasHelius) return;
     window.api.startFlow();
     const offUpdate = window.api.onFlowUpdate(setSnap);
     const offStatus = window.api.onFlowStatus(setStatus);
@@ -32,33 +32,31 @@ export default function PumpFlowPage({ hasBitqueryToken, onClickContract, onOpen
       offStatus();
       window.api.stopFlow();
     };
-  }, [hasBitqueryToken]);
+  }, [hasHelius]);
 
   const rows = useMemo(() => sortForTab(snap?.tokens ?? [], tab).slice(0, PAGE_SIZE), [snap, tab]);
 
-  if (!hasBitqueryToken) {
+  if (!hasHelius) {
     return (
       <div className="max-w-2xl mx-auto mt-12 border border-slate-800 rounded-lg p-6 bg-slate-900/40">
-        <h2 className="text-lg font-semibold text-slate-100">Pump Flow needs a Bitquery token</h2>
+        <h2 className="text-lg font-semibold text-slate-100">Pump Flow needs a Helius key</h2>
         <p className="text-sm text-slate-300 mt-2">
           This page streams live pump.fun trades and ranks tokens by net SOL inflow over the last 15 minutes.
-          It uses Bitquery's real-time API.
+          It connects directly to Solana through your Helius RPC — the same key used for Solana lookups.
         </p>
         <ol className="text-sm text-slate-300 mt-4 space-y-2 list-decimal pl-5">
           <li>
-            Make a free account at{' '}
-            <a className="text-emerald-400 hover:underline" href="https://account.bitquery.io" target="_blank" rel="noreferrer">account.bitquery.io</a>.
-          </li>
-          <li>
-            Create an OAuth <span className="text-slate-200">access token</span> (starts with <span className="mono">ory_at_…</span>).
+            Grab a free key at{' '}
+            <a className="text-emerald-400 hover:underline" href="https://dev.helius.xyz" target="_blank" rel="noreferrer">dev.helius.xyz</a>.
           </li>
           <li>
             Paste it into{' '}
-            <button onClick={onOpenSettings} className="underline text-emerald-400 hover:text-emerald-300">Settings</button> → Bitquery Token.
+            <button onClick={onOpenSettings} className="underline text-emerald-400 hover:text-emerald-300">Settings</button> → Helius Key.
           </li>
         </ol>
         <p className="text-xs text-slate-500 mt-4">
-          Heads-up: the live stream draws from your monthly Bitquery quota, so this page only streams while it's open.
+          No metered third-party API — trades are decoded on-device straight from the pump.fun program. The
+          stream only runs while this page is open.
         </p>
       </div>
     );
@@ -103,7 +101,7 @@ export default function PumpFlowPage({ hasBitqueryToken, onClickContract, onOpen
       {rows.length === 0 ? (
         <div className="text-sm text-slate-500 border border-slate-800 rounded px-4 py-10 text-center">
           {status === 'error'
-            ? 'Stream error — check your Bitquery token in Settings. Retrying…'
+            ? 'Stream error — check your Helius key in Settings. Retrying…'
             : 'Waiting for the first trades to roll in…'}
         </div>
       ) : (
