@@ -1,0 +1,100 @@
+WALLET LOOKUP — HOW TO LAUNCH
+==============================
+
+REQUIREMENTS
+------------
+- Node.js v20+ (you have v24, which is fine)
+- npm v10+
+- Your API keys saved in .env (already done — see apikeys.txt)
+
+
+FIRST-TIME SETUP (only needed once)
+-----------------------------------
+1. Open PowerShell or a terminal.
+2. cd C:\Users\fatty\Desktop\walletlookup
+3. npm install
+   (Already done. Only re-run if you delete node_modules.)
+
+
+LAUNCH IN DEV MODE (live reload, DevTools open)
+-----------------------------------------------
+1. Open PowerShell.
+2. cd C:\Users\fatty\Desktop\walletlookup
+3. npm run dev
+
+The Electron window will open with the Wallet Lookup UI. A separate
+DevTools window will also open — you can ignore or close it.
+
+To stop: close the Electron window, or hit Ctrl+C in the terminal.
+
+
+BUILD A STANDALONE APP (for normal use)
+---------------------------------------
+1. cd C:\Users\fatty\Desktop\walletlookup
+2. npm run build         (compiles main / preload / renderer to out/)
+3. npm run start         (launches the built app)
+
+This runs faster than dev mode and doesn't open DevTools.
+
+
+USING THE APP
+-------------
+- Paste any ERC-20 contract (0x…) or Solana mint address into the search bar.
+- Hit "Look up buyers" — the chain is auto-detected.
+- The table fills with the last 50 buys (basic columns first, then wallet
+  enrichment streams in over a few seconds).
+- Click any row to expand the wallet's drill-down panel (funding source,
+  top holdings, recent token buys).
+
+Column quick-reference:
+  WHEN        time since the buy
+  WALLET      buyer's address (🌱 = fresh / sniper, "contract" = MEV bot)
+  TOKENS      amount of the token they bought
+  SPENT       what they paid (in ETH/SOL/USDC)
+  USD         approximate USD value (uses current price)
+  AGE         days since the wallet's first transaction
+  TXS         total transaction count
+  BALANCE     wallet's current ETH or SOL balance
+  #TOKENS     number of distinct tokens currently held
+  HELD*       % of this buy still in the wallet
+                +N% more (cyan) = accumulated beyond this buy
+                ✓ 100% (green) = still holding the full buy
+                amber / red    = partially / mostly sold
+  SCORE       local 0–100 smart score (rows are tinted by this)
+  TX          tx hash, links to Etherscan / Solscan
+
+Header badges:
+  🌱 N fresh        — likely sniper bots, treat with skepticism
+  N established    — older, active wallets worth a closer look
+
+
+CHANGING / ADDING API KEYS
+--------------------------
+Edit the .env file in this directory:
+  ALCHEMY_API_KEY=...
+  HELIUS_API_KEY=...
+  CIELO_API_KEY=        (optional — leave blank if not subscribed)
+
+Restart the app after changing keys (dev mode picks them up on restart;
+the built app reads them on launch).
+
+
+TROUBLESHOOTING
+---------------
+- Window is black / empty
+    Close the window and re-run "npm run dev". If still black, open
+    DevTools (Ctrl+Shift+I), check the Console tab for red errors.
+
+- "ALCHEMY_API_KEY is not set" / "HELIUS_API_KEY is not set"
+    Your .env is missing or empty. Check the file exists and the keys
+    are filled in without quotes around them.
+
+- Lookup hangs / times out
+    DexScreener or the chain RPC may be rate-limiting you. Wait a
+    minute and try again. The free Alchemy/Helius tiers handle a few
+    lookups per minute comfortably.
+
+- "No Ethereum DEX pool found for this token"
+    The token isn't listed on DexScreener (either too new or no
+    liquidity). Pool discovery only works for tokens with at least one
+    indexed pair.

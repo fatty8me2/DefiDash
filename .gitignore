@@ -1,0 +1,17 @@
+node_modules/
+out/
+dist/
+.env
+.env.local
+*.log
+.DS_Store
+.vscode/
+
+# Secrets — never commit real API keys
+apikeys.txt
+
+# Build artifacts
+*.tsbuildinfo
+
+# Local editor/tool state
+.claude/
