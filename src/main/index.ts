@@ -11,6 +11,7 @@ import { getWalletDetail } from './enrichment/walletDetail';
 import { checkHoneypot } from './enrichment/honeypot';
 import { getDevWalletInfo } from './enrichment/devWallet';
 import { loadSettings, saveSettings, type Settings } from './settings';
+import { loadTracked, addTracked, removeTracked, renameTracked } from './trackedWallets';
 import { V2Feed } from './feeds/v2Feed';
 import { VerifiedFeed } from './feeds/verifiedFeed';
 import { PumpFlowFeed } from './feeds/pumpFlow';
@@ -18,7 +19,7 @@ import { EvmFlowFeed } from './feeds/evmFlow';
 import { initAutoUpdates, checkForUpdatesManual } from './updater';
 import { fetchTrending } from './feeds/trending';
 import { analyzeLaunch } from './enrichment/launch';
-import type { BuyerRow, Chain, DevWalletInfo, EvmFlowChain, EvmFlowSnapshot, FlowSnapshot, HoneypotReport, LiveFeedItem, LookupResult, TrendingList, WalletDetail } from '../shared/types';
+import type { BuyerRow, Chain, DevWalletInfo, EvmFlowChain, EvmFlowSnapshot, FlowSnapshot, HoneypotReport, LiveFeedItem, LookupResult, TrackedWallet, TrendingList, WalletDetail } from '../shared/types';
 
 dotenv.config();
 
@@ -197,6 +198,24 @@ ipcMain.handle(
   async (_e, payload: { chain: Chain; contract: string }): Promise<HoneypotReport> => {
     return checkHoneypot(payload.chain, payload.contract);
   }
+);
+
+// --- Tracked wallets (persisted pin list for the Tracked dashboard) ---
+ipcMain.handle('tracked:list', (): TrackedWallet[] => loadTracked());
+ipcMain.handle(
+  'tracked:add',
+  (_e, p: { chain: Chain; address: string; label: string }): TrackedWallet[] =>
+    addTracked(p.chain, p.address, p.label ?? '')
+);
+ipcMain.handle(
+  'tracked:remove',
+  (_e, p: { chain: Chain; address: string }): TrackedWallet[] =>
+    removeTracked(p.chain, p.address)
+);
+ipcMain.handle(
+  'tracked:rename',
+  (_e, p: { chain: Chain; address: string; label: string }): TrackedWallet[] =>
+    renameTracked(p.chain, p.address, p.label ?? '')
 );
 
 ipcMain.handle(

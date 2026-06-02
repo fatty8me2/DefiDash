@@ -8,6 +8,7 @@ import LiveFeeds from './components/LiveFeeds';
 import LaunchAnalysisPanel from './components/LaunchAnalysisPanel';
 import PumpFlowPage from './components/PumpFlowPage';
 import EvmFlowPage from './components/EvmFlowPage';
+import TrackedWalletsPage from './components/TrackedWalletsPage';
 import CopyButton from './components/CopyButton';
 import DexScreenerButton from './components/DexScreenerButton';
 import type { AppSettings, BuyerRow, DevWalletInfo, HoneypotReport, LookupResult } from '../shared/types';
@@ -20,7 +21,7 @@ interface ConfigStatus {
   hasCielo: boolean;
 }
 
-type View = 'dashboard' | 'flow' | 'evmflow';
+type View = 'dashboard' | 'flow' | 'evmflow' | 'tracked';
 
 export default function App() {
   const [result, setResult] = useState<LookupResult | null>(null);
@@ -105,6 +106,7 @@ export default function App() {
             <NavTab label="Dashboard" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
             <NavTab label="Pump Flow" active={view === 'flow'} onClick={() => setView('flow')} />
             <NavTab label="ETH Flow" active={view === 'evmflow'} onClick={() => setView('evmflow')} />
+            <NavTab label="Tracked" active={view === 'tracked'} onClick={() => setView('tracked')} />
           </nav>
         </div>
         <div className="flex items-center gap-3">
@@ -137,6 +139,16 @@ export default function App() {
         ) : view === 'evmflow' ? (
           <EvmFlowPage
             hasAlchemy={!!config?.hasAlchemy}
+            onClickContract={(addr) => {
+              setView('dashboard');
+              runLookup(addr);
+            }}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        ) : view === 'tracked' ? (
+          <TrackedWalletsPage
+            hasAlchemy={!!config?.hasAlchemy}
+            hasHelius={!!config?.hasHelius}
             onClickContract={(addr) => {
               setView('dashboard');
               runLookup(addr);

@@ -22,6 +22,15 @@ export interface AppSettings {
   notifyVerified: boolean;        // desktop notification on new verified launch
 }
 
+// A wallet the user has pinned to the Tracked Wallets dashboard. Persisted
+// on-device (plain JSON — these are public addresses + a user label).
+export interface TrackedWallet {
+  address: string;
+  chain: Chain;
+  label: string;      // user-given nickname, may be ''
+  addedAt: number;    // unix seconds
+}
+
 export interface BuyerRow {
   chain: Chain;
   wallet: string;

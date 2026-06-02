@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppSettings, BundleAnalysis, BuyerRow, Chain, DevWalletInfo, EvmFlowChain, EvmFlowSnapshot, FlowSnapshot, HoneypotReport, LiveFeedItem, LookupResult, SniperAnalysis, TrendingList, TrendingToken, WalletDetail } from '../shared/types';
+import type { AppSettings, BundleAnalysis, BuyerRow, Chain, DevWalletInfo, EvmFlowChain, EvmFlowSnapshot, FlowSnapshot, HoneypotReport, LiveFeedItem, LookupResult, SniperAnalysis, TrackedWallet, TrendingList, TrendingToken, WalletDetail } from '../shared/types';
 
 export type SettingsShape = AppSettings;
 
@@ -23,6 +23,15 @@ const api = {
     ipcRenderer.invoke('lookup:enrich', { chain, wallet, tokenContract, boughtAmount }),
   walletDetail: (chain: Chain, wallet: string): Promise<WalletDetail> =>
     ipcRenderer.invoke('lookup:detail', { chain, wallet }),
+
+  // Tracked wallets (persisted pin list for the Tracked dashboard)
+  trackedList: (): Promise<TrackedWallet[]> => ipcRenderer.invoke('tracked:list'),
+  trackedAdd: (chain: Chain, address: string, label: string): Promise<TrackedWallet[]> =>
+    ipcRenderer.invoke('tracked:add', { chain, address, label }),
+  trackedRemove: (chain: Chain, address: string): Promise<TrackedWallet[]> =>
+    ipcRenderer.invoke('tracked:remove', { chain, address }),
+  trackedRename: (chain: Chain, address: string, label: string): Promise<TrackedWallet[]> =>
+    ipcRenderer.invoke('tracked:rename', { chain, address, label }),
   honeypotCheck: (chain: Chain, contract: string): Promise<HoneypotReport> =>
     ipcRenderer.invoke('lookup:honeypot', { chain, contract }),
   devWalletInfo: (chain: Chain, contract: string, creatorHint: string | null): Promise<DevWalletInfo | null> =>
