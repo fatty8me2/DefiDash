@@ -84,6 +84,13 @@ interface MintAgg {
   lastTrade: number;      // ms
   priceUsd: number | null;
   priceSol: number | null; // last token price in SOL (from curve reserves)
+  // Launch-bundle tracking. A pump.fun bundle lands atomically in the same slot
+  // as the CreateEvent; we sum the buy token amounts in that slot.
+  sawCreate: boolean;          // did we witness this mint's CreateEvent live?
+  createSlot: number | null;   // slot the CreateEvent landed in
+  firstSlot: number | null;    // earliest slot we observed any event for this mint
+  bundleTokens: number;        // Σ token units bought in the creation slot (raw, scaled)
+  bundleWallets: Set<string>;  // distinct wallets that bought in the creation slot
 }
 
 interface DecodedTrade {
@@ -92,6 +99,8 @@ interface DecodedTrade {
   isBuy: boolean;
   priceSol: number | null; // SOL per token, from virtual reserves
   tsMs: number;
+  tokens: number;    // token units traded (scaled to whole tokens)
+  user: string;      // trader wallet
 }
 
 interface DecodedCreate {
@@ -176,7 +185,7 @@ export class PumpFlowFeed extends EventEmitter {
         result?: unknown;
         method?: string;
         error?: { message?: string };
-        params?: { result?: { value?: { logs?: string[]; err?: unknown } } };
+        params?: { result?: { value?: { logs?: string[]; err?: unknown }; context?: { slot?: number } } };
       };
       try {
         msg = JSON.parse(raw.toString());
@@ -194,8 +203,9 @@ export class PumpFlowFeed extends EventEmitter {
       }
       if (msg.method === 'logsNotification') {
         const value = msg.params?.result?.value;
+        const slot = msg.params?.result?.context?.slot ?? null;
         if (value && !value.err && Array.isArray(value.logs)) {
-          this.handleLogs(value.logs);
+          this.handleLogs(value.logs, slot);
         }
       }
     });
@@ -230,7 +240,7 @@ export class PumpFlowFeed extends EventEmitter {
   }
 
   // Scan a transaction's logs for pump.fun Anchor events.
-  private handleLogs(logs: string[]): void {
+  private handleLogs(logs: string[], slot: number | null): void {
     for (const line of logs) {
       const idx = line.indexOf('Program data: ');
       if (idx === -1) continue;
@@ -245,15 +255,15 @@ export class PumpFlowFeed extends EventEmitter {
       const disc = buf.subarray(0, 8);
       if (disc.equals(TRADE_DISC)) {
         const tr = decodeTrade(buf);
-        if (tr) this.applyTrade(tr);
+        if (tr) this.applyTrade(tr, slot);
       } else if (disc.equals(CREATE_DISC)) {
         const cr = decodeCreate(buf);
-        if (cr) this.applyCreate(cr);
+        if (cr) this.applyCreate(cr, slot);
       }
     }
   }
 
-  private applyTrade(tr: DecodedTrade): void {
+  private applyTrade(tr: DecodedTrade, slot: number | null): void {
     if (tr.sol <= 0) return;
     let agg = this.mints.get(tr.mint);
     if (!agg) {
@@ -268,7 +278,12 @@ export class PumpFlowFeed extends EventEmitter {
         firstSeen: tr.tsMs,
         lastTrade: tr.tsMs,
         priceUsd: null,
-        priceSol: tr.priceSol
+        priceSol: tr.priceSol,
+        sawCreate: false,
+        createSlot: null,
+        firstSlot: slot,
+        bundleTokens: 0,
+        bundleWallets: new Set()
       };
       this.mints.set(tr.mint, agg);
     }
@@ -281,15 +296,29 @@ export class PumpFlowFeed extends EventEmitter {
     if (agg.trades.length > MAX_TRADES_PER_MINT) {
       agg.trades.splice(0, agg.trades.length - MAX_TRADES_PER_MINT);
     }
+    // Bundle accounting: a launch bundle is the set of buys in the same slot the
+    // mint was created. Track the earliest slot we see and accumulate buys there.
+    if (slot !== null) {
+      if (agg.firstSlot === null) agg.firstSlot = slot;
+      if (tr.isBuy && agg.firstSlot === slot) {
+        agg.bundleTokens += tr.tokens;
+        if (agg.bundleWallets.size < 500) agg.bundleWallets.add(tr.user);
+      }
+    }
   }
 
-  private applyCreate(cr: DecodedCreate): void {
+  private applyCreate(cr: DecodedCreate, slot: number | null): void {
     const agg = this.mints.get(cr.mint);
     if (agg) {
       if (agg.symbol === null && cr.symbol) agg.symbol = cr.symbol;
       if (agg.name === null && cr.name) agg.name = cr.name;
       if (agg.uri === null && cr.uri) agg.uri = cr.uri;
       agg.metaTried = true;
+      agg.sawCreate = true;
+      if (slot !== null) {
+        if (agg.createSlot === null) agg.createSlot = slot;
+        if (agg.firstSlot === null) agg.firstSlot = slot;
+      }
     } else {
       // Seed a metadata-only record; trades may follow within the window.
       const now = Date.now();
@@ -304,7 +333,12 @@ export class PumpFlowFeed extends EventEmitter {
           firstSeen: now,
           lastTrade: now,
           priceUsd: null,
-          priceSol: null
+          priceSol: null,
+          sawCreate: true,
+          createSlot: slot,
+          firstSlot: slot,
+          bundleTokens: 0,
+          bundleWallets: new Set()
         });
       }
     }
@@ -409,6 +443,12 @@ export class PumpFlowFeed extends EventEmitter {
         : null);
       const marketCapUsd = priceUsd !== null ? priceUsd * PUMP_SUPPLY : null;
 
+      // Bundled% is only meaningful when we witnessed the launch live (the
+      // CreateEvent) and the bundle slot matches the first slot we observed.
+      const launchObserved = agg.sawCreate && agg.createSlot !== null && agg.createSlot === agg.firstSlot;
+      const bundledPct = launchObserved ? Math.min(100, (agg.bundleTokens / PUMP_SUPPLY) * 100) : null;
+      const bundleWallets = launchObserved ? agg.bundleWallets.size : 0;
+
       computed.push({
         mint,
         symbol: agg.symbol,
@@ -424,7 +464,9 @@ export class PumpFlowFeed extends EventEmitter {
         marketCapUsd,
         firstSeen: Math.floor(agg.firstSeen / 1000),
         lastTrade: Math.floor(agg.lastTrade / 1000),
-        spark
+        spark,
+        bundledPct,
+        bundleWallets
       });
     }
 
@@ -469,9 +511,9 @@ function decodeTrade(buf: Buffer): DecodedTrade | null {
   let o = 8;
   const mint = base58(buf.subarray(o, o + 32)); o += 32;
   const solAmount = u64(buf, o); o += 8;
-  o += 8; // tokenAmount (unused)
+  const tokenAmount = u64(buf, o); o += 8;
   const isBuy = buf[o] === 1; o += 1;
-  o += 32; // user (unused)
+  const user = base58(buf.subarray(o, o + 32)); o += 32;
   const ts = Number(buf.readBigInt64LE(o)); o += 8;
   const virtualSolReserves = u64(buf, o); o += 8;
   const virtualTokenReserves = u64(buf, o); o += 8;
@@ -482,7 +524,7 @@ function decodeTrade(buf: Buffer): DecodedTrade | null {
     ? (virtualSolReserves / LAMPORTS) / (virtualTokenReserves / TOKEN_DECIMALS)
     : null;
   const tsMs = ts > 0 ? ts * 1000 : Date.now();
-  return { mint, sol, isBuy, priceSol, tsMs };
+  return { mint, sol, isBuy, priceSol, tsMs, tokens: tokenAmount / TOKEN_DECIMALS, user };
 }
 
 // CreateEvent layout (after the discriminator):

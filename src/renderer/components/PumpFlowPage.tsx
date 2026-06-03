@@ -162,6 +162,7 @@ function FlowCard({ t, onClick }: { t: FlowToken; onClick: () => void }) {
           {positive ? '+' : ''}{fmtSol(t.netInflowSol)}
         </span>
         <span className="text-[10px] uppercase tracking-wider text-slate-500">◎ Net Inflow · 15m</span>
+        {t.bundledPct !== null && <BundleBadge pct={t.bundledPct} wallets={t.bundleWallets} />}
       </div>
 
       <Sparkline data={t.spark} positive={positive} />
@@ -181,6 +182,25 @@ function FlowCard({ t, onClick }: { t: FlowToken; onClick: () => void }) {
       </div>
       <div className="mt-1 mono text-[10px] text-slate-600 truncate">{shortMint(t.mint)}</div>
     </div>
+  );
+}
+
+// Shows what % of total supply was bought in the launch bundle (the buys that
+// landed in the same slot the mint was created). Only rendered when we
+// witnessed the launch live. High % = concentrated insider/bundle launch.
+function BundleBadge({ pct, wallets }: { pct: number; wallets: number }) {
+  const cls = pct >= 20
+    ? 'bg-red-500/15 text-red-400 border-red-900/60'
+    : pct >= 8
+      ? 'bg-amber-500/15 text-amber-400 border-amber-900/60'
+      : 'bg-slate-700/30 text-slate-400 border-slate-700/60';
+  return (
+    <span
+      className={`ml-auto rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${cls}`}
+      title={`${wallets} wallet${wallets === 1 ? '' : 's'} bought ${pct.toFixed(2)}% of supply in the launch bundle (same slot as token creation)`}
+    >
+      🧺 {pct.toFixed(pct >= 10 ? 0 : 1)}%
+    </span>
   );
 }
 

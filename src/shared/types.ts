@@ -225,6 +225,8 @@ export interface FlowToken {
   firstSeen: number;              // unix sec — earliest trade we observed for this mint
   lastTrade: number;              // unix sec — most recent trade
   spark: number[];                // cumulative net-inflow series across the window (for the chart)
+  bundledPct: number | null;      // % of total supply bought in the launch bundle (same slot as creation); null if the launch wasn't observed live
+  bundleWallets: number;          // distinct wallets in that launch bundle
 }
 
 export interface FlowSnapshot {
