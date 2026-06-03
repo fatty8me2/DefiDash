@@ -27,6 +27,12 @@ const PAGE_SIZE = 24;
 // pump.fun tokens graduate to Raydium when the bonding curve fills (~$69k mcap).
 const GRADUATION_MCAP_USD = 69_000;
 
+// Shared sizing for the small action buttons on each tile (socials / lookup /
+// copy). Bumped up from w-4 so they fill the card's corner row more comfortably.
+const ACTION_BTN =
+  'inline-flex items-center justify-center w-6 h-6 rounded text-sm leading-none ' +
+  'text-slate-400 hover:text-emerald-400 hover:bg-slate-800/60 shrink-0';
+
 export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSettings }: Props) {
   const [tab, setTab] = useState<SortKey>('top');
   const [snap, setSnap] = useState<FlowSnapshot | null>(null);
@@ -292,28 +298,40 @@ function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void;
           </div>
           <div className="text-xs text-slate-500 truncate">{t.name ?? '—'}</div>
         </div>
-        <div className="ml-auto flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-          {meta?.twitter && <SocialLink href={meta.twitter} label="𝕏" title="Open X / Twitter" />}
-          {meta?.telegram && <SocialLink href={meta.telegram} label="✈" title="Open Telegram" />}
-          {meta?.website && <SocialLink href={meta.website} label="🌐" title="Open website" />}
+        <div className="ml-auto flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          {meta?.twitter && <SocialLink href={meta.twitter} label="𝕏" title="Open X / Twitter" className={ACTION_BTN} />}
+          {meta?.telegram && <SocialLink href={meta.telegram} label="✈" title="Open Telegram" className={ACTION_BTN} />}
+          {meta?.website && <SocialLink href={meta.website} label="🌐" title="Open website" className={ACTION_BTN} />}
           <button
             onClick={(e) => { e.stopPropagation(); onLookup(); }}
             title="Look up the buyers for this token"
-            className="inline-flex items-center justify-center w-4 h-4 rounded text-[10px] leading-none text-slate-500 hover:text-emerald-400 hover:bg-slate-800/60 shrink-0"
+            className={ACTION_BTN}
           >
             🔍
           </button>
-          <DexScreenerButton address={t.mint} chain="solana" title="Open on DexScreener" />
-          <CopyButton value={t.mint} title="Copy mint address" />
+          <DexScreenerButton
+            address={t.mint}
+            chain="solana"
+            title="Open on DexScreener"
+            className="inline-flex items-center justify-center w-6 h-6 rounded-[3px] overflow-hidden shrink-0 opacity-80 hover:opacity-100 ring-1 ring-transparent hover:ring-emerald-500/60 transition"
+          />
+          <CopyButton value={t.mint} title="Copy mint address" className={ACTION_BTN} />
         </div>
       </div>
 
-      <div className="mt-2 flex items-baseline gap-2">
+      <div className="mt-2 flex items-baseline flex-wrap gap-x-2 gap-y-1">
         <span className={`text-xl font-semibold ${positive ? 'text-emerald-400' : 'text-red-400'}`}>
           {positive ? '+' : ''}{fmtSol(t.netInflowSol)}
         </span>
         <span className="text-[11px] uppercase tracking-wider text-slate-500">◎ Net Inflow · 15m</span>
+        <span className="text-xs text-slate-400"><span className="text-slate-600">tx</span> {t.txCount}</span>
+        <span className="text-xs text-slate-400"><span className="text-slate-600">age</span> {ageStr(t.firstSeen)}</span>
         {t.bundledPct !== null && <BundleBadge pct={t.bundledPct} wallets={t.bundleWallets} />}
+      </div>
+
+      <div className="mt-1.5 flex items-baseline gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-slate-500">Market Cap</span>
+        <span className="text-2xl font-bold text-slate-100">{fmtUsd(t.marketCapUsd)}</span>
       </div>
 
       <Sparkline data={t.spark} positive={positive} />
@@ -324,17 +342,6 @@ function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void;
           <div className="h-full bg-emerald-500" style={{ width: `${buyPct}%` }} />
         </div>
         <span className="text-red-400 font-medium">{fmtSol(t.sellVolSol)} ▼</span>
-      </div>
-
-      <div className="mt-3 flex items-end justify-between gap-2">
-        <div className="flex flex-col leading-tight">
-          <span className="text-[10px] uppercase tracking-wider text-slate-500">Market Cap</span>
-          <span className="text-lg font-bold text-slate-100">{fmtUsd(t.marketCapUsd)}</span>
-        </div>
-        <div className="flex items-center gap-3 text-xs text-slate-400">
-          <span><span className="text-slate-600">tx</span> {t.txCount}</span>
-          <span><span className="text-slate-600">age</span> {ageStr(t.firstSeen)}</span>
-        </div>
       </div>
 
       <GraduationBar marketCapUsd={t.marketCapUsd} />
@@ -355,7 +362,7 @@ function BundleBadge({ pct, wallets }: { pct: number; wallets: number }) {
       : 'bg-slate-700/30 text-slate-400 border-slate-700/60';
   return (
     <span
-      className={`ml-auto rounded border px-1.5 py-0.5 text-[10px] font-medium leading-none ${cls}`}
+      className={`ml-auto rounded border px-2 py-1 text-sm font-bold leading-none ${cls}`}
       title={`${wallets} wallet${wallets === 1 ? '' : 's'} bought ${pct.toFixed(2)}% of supply in the launch bundle (same slot as token creation)`}
     >
       🧺 {pct.toFixed(pct >= 10 ? 0 : 1)}%
