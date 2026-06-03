@@ -1,6 +1,6 @@
 {
   "name": "walletlookup",
-  "version": "1.2.17",
+  "version": "1.3.0",
   "description": "Look up the last buyers of an ERC-20 or SPL token",
   "type": "module",
   "main": "out/main/index.js",
