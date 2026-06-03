@@ -191,10 +191,10 @@ function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void;
         <TokenIcon mint={t.mint} image={meta?.image ?? null} symbol={t.symbol} />
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <span className="text-sm font-semibold text-slate-100 truncate">{t.symbol ?? '???'}</span>
+            <span className="text-base font-semibold text-slate-100 truncate">{t.symbol ?? '???'}</span>
             {dexPaid && <DexPaidBadge />}
           </div>
-          <div className="text-[11px] text-slate-500 truncate">{t.name ?? '—'}</div>
+          <div className="text-xs text-slate-500 truncate">{t.name ?? '—'}</div>
         </div>
         <div className="ml-auto flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           {meta?.twitter && <SocialLink href={meta.twitter} label="𝕏" title="Open X / Twitter" />}
@@ -216,26 +216,31 @@ function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void;
         <span className={`text-xl font-semibold ${positive ? 'text-emerald-400' : 'text-red-400'}`}>
           {positive ? '+' : ''}{fmtSol(t.netInflowSol)}
         </span>
-        <span className="text-[10px] uppercase tracking-wider text-slate-500">◎ Net Inflow · 15m</span>
+        <span className="text-[11px] uppercase tracking-wider text-slate-500">◎ Net Inflow · 15m</span>
         {t.bundledPct !== null && <BundleBadge pct={t.bundledPct} wallets={t.bundleWallets} />}
       </div>
 
       <Sparkline data={t.spark} positive={positive} />
 
-      <div className="mt-2 flex items-center gap-2 text-[11px]">
-        <span className="text-emerald-400">▲ {fmtSol(t.buyVolSol)}</span>
-        <div className="flex-1 h-1 rounded-full bg-red-500/40 overflow-hidden">
+      <div className="mt-2 flex items-center gap-2 text-xs">
+        <span className="text-emerald-400 font-medium">▲ {fmtSol(t.buyVolSol)}</span>
+        <div className="flex-1 h-1.5 rounded-full bg-red-500/40 overflow-hidden">
           <div className="h-full bg-emerald-500" style={{ width: `${buyPct}%` }} />
         </div>
-        <span className="text-red-400">{fmtSol(t.sellVolSol)} ▼</span>
+        <span className="text-red-400 font-medium">{fmtSol(t.sellVolSol)} ▼</span>
       </div>
 
-      <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
-        <span>{t.txCount} tx</span>
-        <span>mc {fmtUsd(t.marketCapUsd)}</span>
-        <span>age {ageStr(t.firstSeen)}</span>
+      <div className="mt-3 flex items-end justify-between gap-2">
+        <div className="flex flex-col leading-tight">
+          <span className="text-[10px] uppercase tracking-wider text-slate-500">Market Cap</span>
+          <span className="text-lg font-bold text-slate-100">{fmtUsd(t.marketCapUsd)}</span>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-slate-400">
+          <span><span className="text-slate-600">tx</span> {t.txCount}</span>
+          <span><span className="text-slate-600">age</span> {ageStr(t.firstSeen)}</span>
+        </div>
       </div>
-      <div className="mt-1 mono text-[10px] text-slate-600 truncate">{shortMint(t.mint)}</div>
+      <div className="mt-1.5 mono text-[11px] text-slate-600 truncate">{shortMint(t.mint)}</div>
     </div>
   );
 }

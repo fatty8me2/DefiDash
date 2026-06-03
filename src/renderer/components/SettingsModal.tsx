@@ -28,13 +28,25 @@ export default function SettingsModal({
 }) {
   const [s, setS] = useState<AppSettings>(DEFAULTS);
   const [saving, setSaving] = useState(false);
+  const [version, setVersion] = useState('');
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     window.api.getSettings().then((loaded) => setS({ ...DEFAULTS, ...loaded }));
+    window.api.appVersion().then(setVersion).catch(() => setVersion(''));
   }, [open]);
 
   if (!open) return null;
+
+  async function checkUpdates() {
+    setChecking(true);
+    try {
+      await window.api.checkForUpdates();
+    } finally {
+      setChecking(false);
+    }
+  }
 
   function set<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
     setS((prev) => ({ ...prev, [key]: value }));
@@ -60,6 +72,22 @@ export default function SettingsModal({
         className="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-lg max-h-[88vh] overflow-y-auto p-6 space-y-6"
         onClick={(e) => e.stopPropagation()}
       >
+        <div className="flex items-center justify-between gap-3 pb-4 border-b border-slate-800">
+          <div>
+            <h1 className="text-base font-semibold text-slate-100">Settings</h1>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {version ? `Wallet Lookup v${version}` : 'Wallet Lookup'}
+            </p>
+          </div>
+          <button
+            onClick={checkUpdates}
+            disabled={checking}
+            className="px-3 py-1.5 rounded text-sm border border-slate-700 text-slate-200 hover:border-emerald-600 hover:text-emerald-300 disabled:opacity-50 disabled:hover:border-slate-700 disabled:hover:text-slate-200"
+          >
+            {checking ? 'Checking…' : 'Check for updates'}
+          </button>
+        </div>
+
         <Section title="API Keys" subtitle="Stored encrypted on this machine via the OS keychain. Never sent anywhere except the providers themselves.">
           <Field
             label="Alchemy API Key"
