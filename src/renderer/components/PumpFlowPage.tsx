@@ -108,7 +108,12 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           {rows.map((t) => (
-            <FlowCard key={t.mint} t={t} onClick={() => onClickContract(t.mint)} />
+            <FlowCard
+              key={t.mint}
+              t={t}
+              onClick={() => openPhoton(t.mint)}
+              onLookup={() => onClickContract(t.mint)}
+            />
           ))}
         </div>
       )}
@@ -128,16 +133,17 @@ function sortForTab(tokens: FlowToken[], tab: FlowTab): FlowToken[] {
   }
 }
 
-function FlowCard({ t, onClick }: { t: FlowToken; onClick: () => void }) {
+function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void; onLookup: () => void }) {
   const positive = t.netInflowSol >= 0;
   const total = t.buyVolSol + t.sellVolSol;
   const buyPct = total > 0 ? (t.buyVolSol / total) * 100 : 50;
   const meta = useTokenMeta(t.mint, t.uri);
+  const dexPaid = useDexPaid(t.mint);
 
   return (
     <div
       onClick={onClick}
-      title="Click to look up the buyers for this token"
+      title="Click to open the Photon chart for this token"
       className={`rounded border bg-slate-900/40 p-3 cursor-pointer transition-colors ${
         positive ? 'border-emerald-900/60 hover:border-emerald-600' : 'border-red-900/60 hover:border-red-600'
       }`}
@@ -145,13 +151,23 @@ function FlowCard({ t, onClick }: { t: FlowToken; onClick: () => void }) {
       <div className="flex items-center gap-2">
         <TokenIcon mint={t.mint} image={meta?.image ?? null} symbol={t.symbol} />
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-slate-100 truncate">{t.symbol ?? '???'}</div>
+          <div className="flex items-center gap-1">
+            <span className="text-sm font-semibold text-slate-100 truncate">{t.symbol ?? '???'}</span>
+            {dexPaid && <DexPaidCheck />}
+          </div>
           <div className="text-[11px] text-slate-500 truncate">{t.name ?? '—'}</div>
         </div>
         <div className="ml-auto flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           {meta?.twitter && <SocialLink href={meta.twitter} label="𝕏" title="Open X / Twitter" />}
           {meta?.telegram && <SocialLink href={meta.telegram} label="✈" title="Open Telegram" />}
           {meta?.website && <SocialLink href={meta.website} label="🌐" title="Open website" />}
+          <button
+            onClick={(e) => { e.stopPropagation(); onLookup(); }}
+            title="Look up the buyers for this token"
+            className="inline-flex items-center justify-center w-4 h-4 rounded text-[10px] leading-none text-slate-500 hover:text-emerald-400 hover:bg-slate-800/60 shrink-0"
+          >
+            🔍
+          </button>
           <DexScreenerButton address={t.mint} chain="solana" title="Open on DexScreener" />
           <CopyButton value={t.mint} title="Copy mint address" />
         </div>
@@ -277,6 +293,50 @@ function useTokenMeta(mint: string, uri: string | null): TokenMeta | null {
   return meta;
 }
 
+// Whether the token has a PAID DexScreener listing (an approved "token profile"
+// order — i.e. the team paid to enhance/verify their DexScreener page). We hit
+// DexScreener's orders endpoint once per mint and cache the result.
+const dexPaidCache = new Map<string, boolean>();
+
+function useDexPaid(mint: string): boolean {
+  const [paid, setPaid] = useState<boolean>(() => dexPaidCache.get(mint) ?? false);
+  const tried = useRef(false);
+
+  useEffect(() => {
+    if (dexPaidCache.has(mint)) { setPaid(dexPaidCache.get(mint)!); return; }
+    if (tried.current) return;
+    tried.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`https://api.dexscreener.com/orders/v1/solana/${mint}`);
+        if (!res.ok) throw new Error('orders');
+        const json = await res.json();
+        const isPaid = Array.isArray(json)
+          && json.some((o) => o?.type === 'tokenProfile' && o?.status === 'approved');
+        if (!cancelled) { dexPaidCache.set(mint, isPaid); setPaid(isPaid); }
+      } catch {
+        if (!cancelled) dexPaidCache.set(mint, false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mint]);
+
+  return paid;
+}
+
+// Small green check shown next to the name when DexScreener has been paid.
+function DexPaidCheck() {
+  return (
+    <span
+      title="DexScreener paid — the team paid for an enhanced/verified DexScreener token profile"
+      className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[9px] leading-none shrink-0"
+    >
+      ✓
+    </span>
+  );
+}
+
 function TokenIcon({ mint, image, symbol }: { mint: string; image: string | null; symbol: string | null }) {
   if (image) {
     return <img src={image} alt="" className="w-7 h-7 rounded shrink-0 object-cover bg-slate-800" />;
@@ -355,4 +415,10 @@ function ageStr(firstSeenSec: number): string {
 function shortMint(a: string): string {
   if (a.length <= 14) return a;
   return `${a.slice(0, 6)}…${a.slice(-6)}`;
+}
+
+// Open the Photon chart for a mint in the system browser. Photon resolves the
+// token mint to its primary pool on the /lp route.
+function openPhoton(mint: string): void {
+  window.open(`https://photon-sol.tinyastro.io/en/lp/${mint}`, '_blank', 'noopener,noreferrer');
 }
