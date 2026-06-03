@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { FlowSnapshot, FlowTab, FlowToken } from '../../shared/types';
+import type { FlowSnapshot, FlowToken } from '../../shared/types';
 import CopyButton from './CopyButton';
 import DexScreenerButton from './DexScreenerButton';
 import SocialLink from './SocialLink';
@@ -10,20 +10,32 @@ interface Props {
   onOpenSettings: () => void;
 }
 
-const TABS: { key: FlowTab; label: string; hint: string }[] = [
+// Ranking keys for the tab bar. The first three are the classic net-flow views;
+// the rest are extra sorts requested for digging through the firehose.
+type SortKey = 'top' | 'early' | 'dipping' | 'mcap' | 'velocity' | 'buys';
+
+const TABS: { key: SortKey; label: string; hint: string }[] = [
   { key: 'top', label: 'Top', hint: 'Highest net SOL inflow (15m)' },
   { key: 'early', label: 'Early', hint: 'Most recently active mints' },
-  { key: 'dipping', label: 'Dipping', hint: 'Largest net SOL outflow (15m)' }
+  { key: 'dipping', label: 'Dipping', hint: 'Largest net SOL outflow (15m)' },
+  { key: 'mcap', label: 'Mkt Cap', hint: 'Highest market cap' },
+  { key: 'velocity', label: 'Velocity', hint: 'Most trades per minute' },
+  { key: 'buys', label: 'Buy Pressure', hint: 'Highest share of buy volume' }
 ];
 
 const PAGE_SIZE = 24;
+// pump.fun tokens graduate to Raydium when the bonding curve fills (~$69k mcap).
+const GRADUATION_MCAP_USD = 69_000;
 
 export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSettings }: Props) {
-  const [tab, setTab] = useState<FlowTab>('top');
+  const [tab, setTab] = useState<SortKey>('top');
   const [snap, setSnap] = useState<FlowSnapshot | null>(null);
   const [status, setStatus] = useState<string>('idle');
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
+  const [query, setQuery] = useState('');
+  const [minMc, setMinMc] = useState('');
+  const [maxMc, setMaxMc] = useState('');
 
   useEffect(() => {
     if (!hasHelius) return;
@@ -52,7 +64,23 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
     window.api.startFlow();
   }
 
-  const rows = useMemo(() => sortForTab(snap?.tokens ?? [], tab).slice(0, PAGE_SIZE), [snap, tab]);
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const min = parseUsd(minMc);
+    const max = parseUsd(maxMc);
+    const filtered = (snap?.tokens ?? []).filter((t) => {
+      if (q) {
+        const hay = `${t.symbol ?? ''} ${t.name ?? ''} ${t.mint}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (min !== null && (t.marketCapUsd ?? 0) < min) return false;
+      if (max !== null && (t.marketCapUsd ?? Infinity) > max) return false;
+      return true;
+    });
+    return sortForTab(filtered, tab).slice(0, PAGE_SIZE);
+  }, [snap, tab, query, minMc, maxMc]);
+
+  const filtersActive = query.trim() !== '' || minMc.trim() !== '' || maxMc.trim() !== '';
 
   if (!hasHelius) {
     return (
@@ -92,7 +120,7 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Pump.fun Live</span>
-          <div className="flex gap-1">
+          <div className="flex flex-wrap gap-1">
             {TABS.map((t) => (
               <button
                 key={t.key}
@@ -136,11 +164,47 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
         </div>
       </div>
 
+      <div className="flex items-center flex-wrap gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search symbol, name, or mint…"
+          className="flex-1 min-w-[180px] bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-sm placeholder-slate-600 focus:outline-none focus:border-emerald-600"
+        />
+        <div className="flex items-center gap-1.5 text-xs text-slate-500">
+          <span className="uppercase tracking-wider">MC</span>
+          <input
+            value={minMc}
+            onChange={(e) => setMinMc(e.target.value)}
+            placeholder="min"
+            className="mono w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm placeholder-slate-600 focus:outline-none focus:border-emerald-600"
+          />
+          <span className="text-slate-600">–</span>
+          <input
+            value={maxMc}
+            onChange={(e) => setMaxMc(e.target.value)}
+            placeholder="max"
+            className="mono w-20 bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm placeholder-slate-600 focus:outline-none focus:border-emerald-600"
+          />
+        </div>
+        {filtersActive && (
+          <button
+            onClick={() => { setQuery(''); setMinMc(''); setMaxMc(''); }}
+            title="Clear all filters"
+            className="px-2.5 py-1.5 rounded text-xs border border-slate-700 text-slate-400 hover:border-slate-500"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
       {rows.length === 0 ? (
         <div className="text-sm text-slate-500 border border-slate-800 rounded px-4 py-10 text-center">
           {status === 'error'
             ? 'Stream error — check your Helius key in Settings. Retrying…'
-            : 'Waiting for the first trades to roll in…'}
+            : filtersActive
+              ? 'No tokens match your filters.'
+              : 'Waiting for the first trades to roll in…'}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
@@ -158,7 +222,7 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
   );
 }
 
-function sortForTab(tokens: FlowToken[], tab: FlowTab): FlowToken[] {
+function sortForTab(tokens: FlowToken[], tab: SortKey): FlowToken[] {
   const copy = [...tokens];
   switch (tab) {
     case 'top':
@@ -167,7 +231,39 @@ function sortForTab(tokens: FlowToken[], tab: FlowTab): FlowToken[] {
       return copy.sort((a, b) => a.netInflowSol - b.netInflowSol);
     case 'early':
       return copy.sort((a, b) => b.firstSeen - a.firstSeen);
+    case 'mcap':
+      return copy.sort((a, b) => (b.marketCapUsd ?? -1) - (a.marketCapUsd ?? -1));
+    case 'velocity':
+      return copy.sort((a, b) => txVelocity(b) - txVelocity(a));
+    case 'buys':
+      return copy.sort((a, b) => buyPressure(b) - buyPressure(a));
   }
+}
+
+// Trades per minute over the token's active span (capped to the 15m window).
+function txVelocity(t: FlowToken): number {
+  const ageMin = Math.max(1, (Date.now() / 1000 - t.firstSeen) / 60);
+  return t.txCount / Math.min(ageMin, 15);
+}
+
+// Share of total volume that was buys (0..1). Ties break toward more volume.
+function buyPressure(t: FlowToken): number {
+  const total = t.buyVolSol + t.sellVolSol;
+  return total > 0 ? t.buyVolSol / total : 0;
+}
+
+// Parse a market-cap filter input, accepting plain numbers plus k/m suffixes
+// (e.g. "20k", "1.5m"). Returns null when the field is empty/invalid.
+function parseUsd(s: string): number | null {
+  const t = s.trim().toLowerCase().replace(/[$,\s]/g, '');
+  if (!t) return null;
+  const m = t.match(/^([\d.]+)(k|m)?$/);
+  if (!m) return null;
+  let v = parseFloat(m[1]);
+  if (!Number.isFinite(v)) return null;
+  if (m[2] === 'k') v *= 1_000;
+  else if (m[2] === 'm') v *= 1_000_000;
+  return v;
 }
 
 function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void; onLookup: () => void }) {
@@ -240,6 +336,9 @@ function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void;
           <span><span className="text-slate-600">age</span> {ageStr(t.firstSeen)}</span>
         </div>
       </div>
+
+      <GraduationBar marketCapUsd={t.marketCapUsd} />
+
       <div className="mt-1.5 mono text-[11px] text-slate-600 truncate">{shortMint(t.mint)}</div>
     </div>
   );
@@ -261,6 +360,34 @@ function BundleBadge({ pct, wallets }: { pct: number; wallets: number }) {
     >
       🧺 {pct.toFixed(pct >= 10 ? 0 : 1)}%
     </span>
+  );
+}
+
+// Progress of the pump.fun bonding curve toward Raydium graduation, derived from
+// market cap (graduation ≈ $69k). Helps spot tokens about to migrate.
+function GraduationBar({ marketCapUsd }: { marketCapUsd: number | null }) {
+  if (marketCapUsd === null || marketCapUsd <= 0) return null;
+  const pct = Math.min(100, (marketCapUsd / GRADUATION_MCAP_USD) * 100);
+  const graduated = marketCapUsd >= GRADUATION_MCAP_USD;
+  const near = !graduated && pct >= 75;
+  const barColor = graduated ? 'bg-sky-400' : near ? 'bg-amber-400' : 'bg-emerald-500';
+  return (
+    <div
+      className="mt-2"
+      title={
+        graduated
+          ? 'Bonding curve full — graduating/graduated to Raydium'
+          : `${pct.toFixed(0)}% to Raydium graduation (~$69k market cap)`
+      }
+    >
+      <div className="flex items-center justify-between text-[10px] mb-0.5">
+        <span className="uppercase tracking-wider text-slate-500">{graduated ? 'Graduated' : 'Graduation'}</span>
+        <span className={graduated ? 'text-sky-300' : near ? 'text-amber-300' : 'text-slate-400'}>{pct.toFixed(0)}%</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+        <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
   );
 }
 
