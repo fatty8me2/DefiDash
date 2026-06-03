@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { FlowSnapshot, FlowTab, FlowToken } from '../../shared/types';
 import CopyButton from './CopyButton';
 import DexScreenerButton from './DexScreenerButton';
+import SocialLink from './SocialLink';
 
 interface Props {
   hasHelius: boolean;
@@ -131,6 +132,7 @@ function FlowCard({ t, onClick }: { t: FlowToken; onClick: () => void }) {
   const positive = t.netInflowSol >= 0;
   const total = t.buyVolSol + t.sellVolSol;
   const buyPct = total > 0 ? (t.buyVolSol / total) * 100 : 50;
+  const meta = useTokenMeta(t.mint, t.uri);
 
   return (
     <div
@@ -141,12 +143,15 @@ function FlowCard({ t, onClick }: { t: FlowToken; onClick: () => void }) {
       }`}
     >
       <div className="flex items-center gap-2">
-        <TokenIcon mint={t.mint} uri={t.uri} symbol={t.symbol} />
+        <TokenIcon mint={t.mint} image={meta?.image ?? null} symbol={t.symbol} />
         <div className="min-w-0">
           <div className="text-sm font-semibold text-slate-100 truncate">{t.symbol ?? '???'}</div>
           <div className="text-[11px] text-slate-500 truncate">{t.name ?? '—'}</div>
         </div>
         <div className="ml-auto flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          {meta?.twitter && <SocialLink href={meta.twitter} label="𝕏" title="Open X / Twitter" />}
+          {meta?.telegram && <SocialLink href={meta.telegram} label="✈" title="Open Telegram" />}
+          {meta?.website && <SocialLink href={meta.website} label="🌐" title="Open website" />}
           <DexScreenerButton address={t.mint} chain="solana" title="Open on DexScreener" />
           <CopyButton value={t.mint} title="Copy mint address" />
         </div>
@@ -206,15 +211,24 @@ function Sparkline({ data, positive }: { data: number[]; positive: boolean }) {
   );
 }
 
-// Lazy token icon: resolves the metadata URI → image once, caches, falls back to a letter avatar.
-const iconCache = new Map<string, string | null>();
+// Token metadata (image + socials) lives in the off-chain JSON the mint's URI
+// points at. We fetch it once per mint, cache it, and reuse it for both the
+// icon and the social links.
+interface TokenMeta {
+  image: string | null;
+  twitter: string | null;
+  telegram: string | null;
+  website: string | null;
+}
 
-function TokenIcon({ mint, uri, symbol }: { mint: string; uri: string | null; symbol: string | null }) {
-  const [src, setSrc] = useState<string | null>(() => iconCache.get(mint) ?? null);
+const metaCache = new Map<string, TokenMeta | null>();
+
+function useTokenMeta(mint: string, uri: string | null): TokenMeta | null {
+  const [meta, setMeta] = useState<TokenMeta | null>(() => metaCache.get(mint) ?? null);
   const tried = useRef(false);
 
   useEffect(() => {
-    if (src || tried.current || !uri) return;
+    if (meta || tried.current || !uri) return;
     tried.current = true;
     let cancelled = false;
     (async () => {
@@ -222,22 +236,30 @@ function TokenIcon({ mint, uri, symbol }: { mint: string; uri: string | null; sy
         const res = await fetch(toHttp(uri));
         if (!res.ok) throw new Error('meta');
         const json = await res.json();
-        const img = typeof json?.image === 'string' ? toHttp(json.image) : null;
-        if (!cancelled && img) {
-          iconCache.set(mint, img);
-          setSrc(img);
-        } else if (!cancelled) {
-          iconCache.set(mint, null);
+        const m: TokenMeta = {
+          image: typeof json?.image === 'string' ? toHttp(json.image) : null,
+          // pump.fun JSON puts socials at the top level; some use `x` for Twitter.
+          twitter: asTwitter(json?.twitter ?? json?.x),
+          telegram: asTelegram(json?.telegram),
+          website: asUrl(json?.website)
+        };
+        if (!cancelled) {
+          metaCache.set(mint, m);
+          setMeta(m);
         }
       } catch {
-        if (!cancelled) iconCache.set(mint, null);
+        if (!cancelled) metaCache.set(mint, null);
       }
     })();
     return () => { cancelled = true; };
-  }, [mint, uri, src]);
+  }, [mint, uri, meta]);
 
-  if (src) {
-    return <img src={src} alt="" className="w-7 h-7 rounded shrink-0 object-cover bg-slate-800" />;
+  return meta;
+}
+
+function TokenIcon({ mint, image, symbol }: { mint: string; image: string | null; symbol: string | null }) {
+  if (image) {
+    return <img src={image} alt="" className="w-7 h-7 rounded shrink-0 object-cover bg-slate-800" />;
   }
   const letter = (symbol ?? mint).slice(0, 1).toUpperCase();
   const hue = hashHue(mint);
@@ -249,6 +271,32 @@ function TokenIcon({ mint, uri, symbol }: { mint: string; uri: string | null; sy
       {letter}
     </div>
   );
+}
+
+// --- URL normalizers for the socials in the token metadata JSON ---
+function asUrl(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s.startsWith('//')) return 'https:' + s;
+  return 'https://' + s.replace(/^\/+/, '');
+}
+
+function asTwitter(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  return `https://x.com/${s.replace(/^@/, '')}`;
+}
+
+function asTelegram(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  return `https://t.me/${s.replace(/^@/, '')}`;
 }
 
 function toHttp(uri: string): string {

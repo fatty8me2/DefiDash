@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { EvmFlowChain, EvmFlowSnapshot, EvmFlowToken, FlowTab } from '../../shared/types';
 import CopyButton from './CopyButton';
 import DexScreenerButton from './DexScreenerButton';
+import SocialLink from './SocialLink';
 
 interface Props {
   hasAlchemy: boolean;
@@ -149,6 +150,7 @@ function FlowCard({ t, chain, onClick }: { t: EvmFlowToken; chain: EvmFlowChain;
   const positive = t.netInflowEth >= 0;
   const total = t.buyVolEth + t.sellVolEth;
   const buyPct = total > 0 ? (t.buyVolEth / total) * 100 : 50;
+  const meta = useEvmTokenMeta(chain, t.address);
 
   // On Ethereum a click runs the buyer lookup; on Base (no mainnet lookup) it
   // opens DexScreener instead.
@@ -178,6 +180,9 @@ function FlowCard({ t, chain, onClick }: { t: EvmFlowToken; chain: EvmFlowChain;
           <div className="text-[11px] text-slate-500 truncate">{t.name ?? '—'}</div>
         </div>
         <div className="ml-auto flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          {meta?.twitter && <SocialLink href={meta.twitter} label="𝕏" title="Open X / Twitter" />}
+          {meta?.telegram && <SocialLink href={meta.telegram} label="✈" title="Open Telegram" />}
+          {meta?.website && <SocialLink href={meta.website} label="🌐" title="Open website" />}
           <DexScreenerButton address={t.address} chain={chain} title="Open on DexScreener" />
           <CopyButton value={t.address} title="Copy token address" />
         </div>
@@ -208,6 +213,81 @@ function FlowCard({ t, chain, onClick }: { t: EvmFlowToken; chain: EvmFlowChain;
       <div className="mt-1 mono text-[10px] text-slate-600 truncate">{shortAddr(t.address)}</div>
     </div>
   );
+}
+
+// EVM tokens have no standard on-chain metadata URI, so we source socials from
+// the DexScreener token API (info.socials / info.websites). Fetched once per
+// token and cached so repeated snapshot re-renders don't refetch.
+interface EvmMeta {
+  twitter: string | null;
+  telegram: string | null;
+  website: string | null;
+}
+
+const evmMetaCache = new Map<string, EvmMeta | null>();
+
+function useEvmTokenMeta(chain: EvmFlowChain, address: string): EvmMeta | null {
+  const key = `${chain}:${address.toLowerCase()}`;
+  const [meta, setMeta] = useState<EvmMeta | null>(() => evmMetaCache.get(key) ?? null);
+  const tried = useRef(false);
+
+  useEffect(() => {
+    if (meta || tried.current) return;
+    tried.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+        if (!res.ok) throw new Error('meta');
+        const data = await res.json();
+        const pairs = (data?.pairs ?? []) as {
+          chainId: string;
+          liquidity?: { usd?: number };
+          info?: {
+            socials?: { type?: string; url?: string }[];
+            websites?: { label?: string; url?: string }[];
+          };
+        }[];
+        // Pick the highest-liquidity pair on this chain that carries an info block.
+        let best: (typeof pairs)[number] | null = null;
+        let bestLiq = -1;
+        for (const p of pairs) {
+          if (p.chainId !== chain || !p.info) continue;
+          const liq = p.liquidity?.usd ?? 0;
+          if (liq > bestLiq) {
+            bestLiq = liq;
+            best = p;
+          }
+        }
+        const socials = best?.info?.socials ?? [];
+        const websites = best?.info?.websites ?? [];
+        const findSocial = (type: string): string | null =>
+          httpUrl(socials.find((s) => (s.type ?? '').toLowerCase() === type)?.url);
+        const m: EvmMeta = {
+          twitter: findSocial('twitter'),
+          telegram: findSocial('telegram'),
+          website: httpUrl(websites[0]?.url)
+        };
+        if (!cancelled) {
+          evmMetaCache.set(key, m);
+          setMeta(m);
+        }
+      } catch {
+        if (!cancelled) evmMetaCache.set(key, null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [key, address, chain, meta]);
+
+  return meta;
+}
+
+function httpUrl(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  return /^https?:\/\//i.test(s) ? s : null;
 }
 
 function Sparkline({ data, positive }: { data: number[]; positive: boolean }) {
