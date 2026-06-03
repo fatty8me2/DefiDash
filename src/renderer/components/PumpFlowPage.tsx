@@ -22,11 +22,15 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
   const [tab, setTab] = useState<FlowTab>('top');
   const [snap, setSnap] = useState<FlowSnapshot | null>(null);
   const [status, setStatus] = useState<string>('idle');
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
 
   useEffect(() => {
     if (!hasHelius) return;
     window.api.startFlow();
-    const offUpdate = window.api.onFlowUpdate(setSnap);
+    // While paused we keep the stream running in the background but stop
+    // applying snapshots, so the tiles freeze for inspection.
+    const offUpdate = window.api.onFlowUpdate((s) => { if (!pausedRef.current) setSnap(s); });
     const offStatus = window.api.onFlowStatus(setStatus);
     return () => {
       offUpdate();
@@ -34,6 +38,19 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
       window.api.stopFlow();
     };
   }, [hasHelius]);
+
+  function togglePause() {
+    setPaused((p) => { pausedRef.current = !p; return !p; });
+  }
+
+  // Restart the live stream from a clean slate (clears the rolling window).
+  function refresh() {
+    pausedRef.current = false;
+    setPaused(false);
+    setSnap(null);
+    window.api.stopFlow();
+    window.api.startFlow();
+  }
 
   const rows = useMemo(() => sortForTab(snap?.tokens ?? [], tab).slice(0, PAGE_SIZE), [snap, tab]);
 
@@ -91,10 +108,30 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
               </button>
             ))}
           </div>
+          <div className="flex gap-1">
+            <button
+              onClick={togglePause}
+              title={paused ? 'Resume live updates' : 'Pause live updates (freeze the tiles)'}
+              className={`px-2.5 py-1 rounded text-xs border ${
+                paused
+                  ? 'border-amber-500 text-amber-300 bg-amber-500/10'
+                  : 'border-slate-700 text-slate-400 hover:border-slate-500'
+              }`}
+            >
+              {paused ? '▶ Resume' : '⏸ Pause'}
+            </button>
+            <button
+              onClick={refresh}
+              title="Restart the live stream and clear the tiles"
+              className="px-2.5 py-1 rounded text-xs border border-slate-700 text-slate-400 hover:border-slate-500"
+            >
+              ↻ Refresh
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-400">
-          <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
-          {status === 'connected' ? 'live' : status}
+          <span className={`w-1.5 h-1.5 rounded-full ${paused ? 'bg-amber-400' : dotColor}`} />
+          {paused ? 'paused' : status === 'connected' ? 'live' : status}
           {snap && <span className="text-slate-600 normal-case tracking-normal ml-1">· {snap.tokens.length} mints</span>}
         </div>
       </div>
@@ -144,16 +181,18 @@ function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void;
     <div
       onClick={onClick}
       title="Click to open the Photon chart for this token"
-      className={`rounded border bg-slate-900/40 p-3 cursor-pointer transition-colors ${
+      className={`rounded border p-3 cursor-pointer transition-colors ${
+        dexPaid ? 'bg-emerald-500/15' : 'bg-slate-900/40'
+      } ${
         positive ? 'border-emerald-900/60 hover:border-emerald-600' : 'border-red-900/60 hover:border-red-600'
       }`}
     >
       <div className="flex items-center gap-2">
         <TokenIcon mint={t.mint} image={meta?.image ?? null} symbol={t.symbol} />
         <div className="min-w-0">
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             <span className="text-sm font-semibold text-slate-100 truncate">{t.symbol ?? '???'}</span>
-            {dexPaid && <DexPaidCheck />}
+            {dexPaid && <DexPaidBadge />}
           </div>
           <div className="text-[11px] text-slate-500 truncate">{t.name ?? '—'}</div>
         </div>
@@ -293,30 +332,47 @@ function useTokenMeta(mint: string, uri: string | null): TokenMeta | null {
   return meta;
 }
 
-// Whether the token has a PAID DexScreener listing (an approved "token profile"
-// order — i.e. the team paid to enhance/verify their DexScreener page). We hit
-// DexScreener's orders endpoint once per mint and cache the result.
+// Whether the token has an "updated"/paid DexScreener profile — i.e. the team
+// has added enhanced token info (header image, socials, website) to their
+// DexScreener page. We read this off the public token-pairs endpoint (the same
+// one the EVM page uses, so we know it works from the renderer): when `info` is
+// populated on a pair, the page has been enhanced. Cached per mint; we only
+// cache a *definitive* answer so a transient network error can't pin a token to
+// "not updated" forever.
+interface DexPairInfo {
+  info?: {
+    imageUrl?: string;
+    header?: string;
+    openGraph?: string;
+    socials?: unknown[];
+    websites?: unknown[];
+  };
+}
+
 const dexPaidCache = new Map<string, boolean>();
 
 function useDexPaid(mint: string): boolean {
   const [paid, setPaid] = useState<boolean>(() => dexPaidCache.get(mint) ?? false);
-  const tried = useRef(false);
 
   useEffect(() => {
     if (dexPaidCache.has(mint)) { setPaid(dexPaidCache.get(mint)!); return; }
-    if (tried.current) return;
-    tried.current = true;
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`https://api.dexscreener.com/orders/v1/solana/${mint}`);
-        if (!res.ok) throw new Error('orders');
-        const json = await res.json();
-        const isPaid = Array.isArray(json)
-          && json.some((o) => o?.type === 'tokenProfile' && o?.status === 'approved');
-        if (!cancelled) { dexPaidCache.set(mint, isPaid); setPaid(isPaid); }
+        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`);
+        if (!res.ok) throw new Error('dex');
+        const json = (await res.json()) as { pairs?: DexPairInfo[] };
+        const pairs = Array.isArray(json?.pairs) ? json.pairs : [];
+        const updated = pairs.some((p) => {
+          const info = p?.info;
+          if (!info || typeof info !== 'object') return false;
+          const socials = Array.isArray(info.socials) ? info.socials.length : 0;
+          const websites = Array.isArray(info.websites) ? info.websites.length : 0;
+          return Boolean(info.imageUrl || info.header || info.openGraph) || socials > 0 || websites > 0;
+        });
+        if (!cancelled) { dexPaidCache.set(mint, updated); setPaid(updated); }
       } catch {
-        if (!cancelled) dexPaidCache.set(mint, false);
+        // Transient failure — do NOT cache, so a later render can retry.
       }
     })();
     return () => { cancelled = true; };
@@ -325,14 +381,14 @@ function useDexPaid(mint: string): boolean {
   return paid;
 }
 
-// Small green check shown next to the name when DexScreener has been paid.
-function DexPaidCheck() {
+// Bold, hard-to-miss badge shown next to the name when DexScreener is updated.
+function DexPaidBadge() {
   return (
     <span
-      title="DexScreener paid — the team paid for an enhanced/verified DexScreener token profile"
-      className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[9px] leading-none shrink-0"
+      title="DexScreener updated — this token has an enhanced/paid DexScreener profile (banner image, socials, website)"
+      className="inline-flex items-center gap-0.5 rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-sm shrink-0"
     >
-      ✓
+      ✓ DEX
     </span>
   );
 }
