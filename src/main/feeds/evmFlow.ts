@@ -2,18 +2,42 @@ import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 import type { EvmFlowChain, EvmFlowSnapshot, EvmFlowToken } from '../../shared/types';
 
-// Live Uniswap-V2 net-ETH-inflow tracker built on a DIRECT Alchemy WebSocket
+// Live net-ETH-inflow tracker built on a DIRECT Alchemy WebSocket
 // (eth_subscribe "logs") instead of a metered third-party API. We subscribe to
-// every V2-style Swap event on the chain, resolve each pair's tokens once via
-// cached eth_call lookups, keep only WETH-paired trades, and compute net ETH
-// inflow + price ourselves. Runs on the user's existing Alchemy key — no
-// Bitquery involved.
+// every Swap event on the chain, resolve each pair/pool's tokens once via cached
+// eth_call lookups, keep only WETH-paired trades, and compute net ETH inflow +
+// price ourselves. Runs on the user's existing Alchemy key — no Bitquery.
+//
+// On Ethereum we track Uniswap-V2-style pools. On Base most launches/volume live
+// on Aerodrome (a Solidly fork) and Uniswap V3, so for Base we additionally
+// subscribe to the V3 and Solidly Swap events to capture *everything* on Base —
+// not just V2. All three decode into the same buy/sell + ETH-size model.
 const ALCHEMY_WS = (sub: string, key: string): string => `wss://${sub}.g.alchemy.com/v2/${key}`;
 const ALCHEMY_HTTP = (sub: string, key: string): string => `https://${sub}.g.alchemy.com/v2/${key}`;
 
 // keccak256("Swap(address,uint256,uint256,uint256,uint256,address)") — the
 // Uniswap V2 Swap event (shared by every V2 fork: Sushi, ShibaSwap, etc.).
-const SWAP_TOPIC = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822';
+// Data = 4 packed uint256: amount0In, amount1In, amount0Out, amount1Out.
+const SWAP_TOPIC_V2 = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822';
+
+// keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)") — the
+// Uniswap V3 Swap event (also emitted by Aerodrome's Slipstream CL pools).
+// Data = amount0 (int256), amount1 (int256), sqrtPriceX96, liquidity, tick.
+// Signed amounts: positive = token flowed INTO the pool, negative = out.
+const SWAP_TOPIC_V3 = '0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67';
+
+// keccak256("Swap(address,address,uint256,uint256,uint256,uint256)") — the
+// Solidly/Velodrome/Aerodrome Swap event. `sender` and `to` are indexed, so the
+// non-indexed data is the same 4 uint256 (amount0In..amount1Out) as V2 — we
+// decode it with the V2 path.
+const SWAP_TOPIC_SOLIDLY = '0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b';
+
+// Which Swap events to subscribe to per chain. Ethereum stays V2-only (its V3
+// firehose is enormous and would swamp pair resolution); Base gets the full set.
+const CHAIN_TOPICS: Record<EvmFlowChain, string[]> = {
+  ethereum: [SWAP_TOPIC_V2],
+  base: [SWAP_TOPIC_V2, SWAP_TOPIC_V3, SWAP_TOPIC_SOLIDLY]
+};
 
 // ERC-20 / pair function selectors (first 4 bytes of keccak256 of the signature).
 const SEL_TOKEN0 = '0x0dfe1681';   // token0()
@@ -77,6 +101,13 @@ interface TokenAgg {
 function hexToBig(hex: string): bigint {
   if (!hex || hex === '0x') return 0n;
   try { return BigInt(hex.startsWith('0x') ? hex : `0x${hex}`); } catch { return 0n; }
+}
+
+// Interpret a 256-bit word as a two's-complement signed integer (for Uniswap V3
+// swap amounts, which are int256: negative means the pool sent that token out).
+function hexToSignedBig(hex: string): bigint {
+  const v = hexToBig(hex);
+  return v >= (1n << 255n) ? v - (1n << 256n) : v;
 }
 
 // Decode an eth_call return value that is either an ABI dynamic string or a
@@ -185,15 +216,24 @@ export class EvmFlowFeed extends EventEmitter {
     }
     this.ws = ws;
 
+    // Surface a rejected upgrade handshake (bad/missing key, network not enabled
+    // on the Alchemy app, etc.) — these arrive as an HTTP response, not a close.
+    ws.on('unexpected-response', (_req, res: { statusCode?: number }) => {
+      const code = res?.statusCode ?? 0;
+      console.log(`[evmflow] handshake rejected: HTTP ${code} (${this.chain})`);
+      this.emit('status', `error: HTTP ${code}`);
+    });
+
     ws.on('open', () => {
       console.log('[evmflow] socket open -> eth_subscribe(logs)');
       this.reconnectAttempts = 0;
       this.emit('status', 'connected');
+      // topics[0] as an array = match ANY of these Swap event signatures.
       ws.send(JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
         method: 'eth_subscribe',
-        params: ['logs', { topics: [SWAP_TOPIC] }]
+        params: ['logs', { topics: [CHAIN_TOPICS[this.chain]] }]
       }));
     });
 
@@ -203,7 +243,7 @@ export class EvmFlowFeed extends EventEmitter {
         result?: unknown;
         method?: string;
         error?: { message?: string };
-        params?: { result?: { address?: string; data?: string; removed?: boolean } };
+        params?: { result?: { address?: string; data?: string; topics?: string[]; removed?: boolean } };
       };
       try {
         msg = JSON.parse(raw.toString());
@@ -221,16 +261,20 @@ export class EvmFlowFeed extends EventEmitter {
       }
       if (msg.method === 'eth_subscription') {
         const log = msg.params?.result;
-        if (log && !log.removed && log.address && log.data) {
-          this.handleLog(log.address.toLowerCase(), log.data);
+        const topic0 = log?.topics?.[0];
+        if (log && !log.removed && log.address && log.data && topic0) {
+          this.handleLog(log.address.toLowerCase(), topic0.toLowerCase(), log.data);
         }
       }
     });
 
-    ws.on('close', (code) => {
-      console.log(`[evmflow] socket closed (${code})`);
+    ws.on('close', (code, reason: Buffer) => {
+      const r = reason && reason.length ? ` ${reason.toString()}` : '';
+      console.log(`[evmflow] socket closed (${code})${r} (${this.chain})`);
       if (this.running) {
-        this.emit('status', 'disconnected');
+        // Include the close code so a persistent drop is diagnosable from the UI
+        // (e.g. 1013/4290 = rate-limited firehose, 1006 = abnormal/auth).
+        this.emit('status', code && code !== 1000 ? `disconnected (${code})` : 'disconnected');
         this.scheduleReconnect();
       }
     });
@@ -256,18 +300,38 @@ export class EvmFlowFeed extends EventEmitter {
     }, delay);
   }
 
-  // A Uniswap V2 Swap log. `data` is 4 packed uint256:
-  // amount0In, amount1In, amount0Out, amount1Out.
-  private handleLog(pair: string, data: string): void {
+  // Decode a Swap log into a normalized RawSwap (amount{0,1}{In,Out}), branching
+  // on the event signature so V2, Solidly (Aerodrome) and V3 all funnel through
+  // the same downstream pair-resolution + accounting path.
+  private handleLog(pair: string, topic0: string, data: string): void {
     const d = data.startsWith('0x') ? data.slice(2) : data;
-    if (d.length < 256) return;
-    const swap: RawSwap = {
-      amount0In: hexToBig(`0x${d.slice(0, 64)}`),
-      amount1In: hexToBig(`0x${d.slice(64, 128)}`),
-      amount0Out: hexToBig(`0x${d.slice(128, 192)}`),
-      amount1Out: hexToBig(`0x${d.slice(192, 256)}`),
-      t: Date.now()
-    };
+    let swap: RawSwap;
+
+    if (topic0 === SWAP_TOPIC_V3) {
+      // V3: amount0 (int256), amount1 (int256), then sqrtPrice/liquidity/tick.
+      // A positive amount means that token flowed INTO the pool (== an "In"),
+      // negative means it left the pool (== an "Out").
+      if (d.length < 320) return;
+      const a0 = hexToSignedBig(`0x${d.slice(0, 64)}`);
+      const a1 = hexToSignedBig(`0x${d.slice(64, 128)}`);
+      swap = {
+        amount0In: a0 > 0n ? a0 : 0n,
+        amount1In: a1 > 0n ? a1 : 0n,
+        amount0Out: a0 < 0n ? -a0 : 0n,
+        amount1Out: a1 < 0n ? -a1 : 0n,
+        t: Date.now()
+      };
+    } else {
+      // V2 / Solidly: 4 packed uint256 amount0In, amount1In, amount0Out, amount1Out.
+      if (d.length < 256) return;
+      swap = {
+        amount0In: hexToBig(`0x${d.slice(0, 64)}`),
+        amount1In: hexToBig(`0x${d.slice(64, 128)}`),
+        amount0Out: hexToBig(`0x${d.slice(128, 192)}`),
+        amount1Out: hexToBig(`0x${d.slice(192, 256)}`),
+        t: Date.now()
+      };
+    }
 
     if (this.pairIgnore.has(pair)) return;
     const info = this.pairInfo.get(pair);

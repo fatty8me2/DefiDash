@@ -100,13 +100,12 @@ export default function App() {
         <div className="flex items-center gap-5">
           <div>
             <h1 className="text-lg font-semibold">Defi Dashboard</h1>
-            <p className="text-xs text-slate-400">Last 50 buyers of any ERC-20 or SPL token · click a row to inspect the wallet</p>
           </div>
           <nav className="flex gap-1">
             <NavTab label="Dashboard" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
             <NavTab label="Pump Flow" active={view === 'flow'} onClick={() => setView('flow')} />
             <NavTab label="ETH Flow" active={view === 'evmflow'} onClick={() => setView('evmflow')} />
-            <NavTab label="Tracked" active={view === 'tracked'} onClick={() => setView('tracked')} />
+            <NavTab label="Tracked Wallets" active={view === 'tracked'} onClick={() => setView('tracked')} />
           </nav>
         </div>
         <div className="flex items-center gap-3">

@@ -52,9 +52,9 @@ export default function EvmFlowPage({ hasAlchemy, onClickContract, onOpenSetting
       <div className="max-w-2xl mx-auto mt-12 border border-slate-800 rounded-lg p-6 bg-slate-900/40">
         <h2 className="text-lg font-semibold text-slate-100">ETH Flow needs an Alchemy key</h2>
         <p className="text-sm text-slate-300 mt-2">
-          This page streams live Uniswap V2 trades on Ethereum and Base, ranking tokens by net ETH
-          inflow over the last 15 minutes. It subscribes directly to on-chain swap logs via your
-          Alchemy key — no extra service required.
+          This page streams live DEX trades on Ethereum (Uniswap V2) and Base (Aerodrome, Uniswap V3
+          &amp; V2), ranking tokens by net ETH inflow over the last 15 minutes. It subscribes directly to
+          on-chain swap logs via your Alchemy key — no extra service required.
         </p>
         <p className="text-sm text-slate-300 mt-4">
           Add your key in{' '}
@@ -75,7 +75,9 @@ export default function EvmFlowPage({ hasAlchemy, onClickContract, onOpenSetting
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Uniswap V2 Live</span>
+          <span className="text-xs uppercase tracking-[0.2em] text-slate-400">
+            {chain === 'base' ? 'Base DEX Live · All DEXs' : 'Uniswap V2 Live'}
+          </span>
           <div className="flex gap-1">
             {CHAINS.map((c) => (
               <button
@@ -120,7 +122,7 @@ export default function EvmFlowPage({ hasAlchemy, onClickContract, onOpenSetting
           {status === 'error'
             ? 'Stream error — check your Alchemy key in Settings. Retrying…'
             : chain === 'base'
-              ? 'Waiting for Uniswap V2 trades on Base… (V2 is quiet on Base — try Ethereum for more activity.)'
+              ? 'Waiting for the first Base trades to roll in… (Aerodrome, Uniswap V3 & V2)'
               : 'Waiting for the first Uniswap V2 trades to roll in…'}
         </div>
       ) : (
