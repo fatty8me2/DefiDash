@@ -18,7 +18,11 @@ export const DEFAULTS: AppSettings = {
   trendingMaxFdvUsd: 0,
   trendingMinLiqUsd: 0,
   launchOnStartup: false,
-  notifyVerified: false
+  notifyVerified: false,
+  displayName: '',
+  daleFirebaseUrl: '',
+  daleFirebaseSecret: '',
+  accessCode: ''
 };
 
 function settingsFile(): string {
@@ -51,7 +55,11 @@ function coerce(parsed: Record<string, unknown>): AppSettings {
     trendingMaxFdvUsd: num(parsed.trendingMaxFdvUsd, DEFAULTS.trendingMaxFdvUsd),
     trendingMinLiqUsd: num(parsed.trendingMinLiqUsd, DEFAULTS.trendingMinLiqUsd),
     launchOnStartup: bool(parsed.launchOnStartup, DEFAULTS.launchOnStartup),
-    notifyVerified: bool(parsed.notifyVerified, DEFAULTS.notifyVerified)
+    notifyVerified: bool(parsed.notifyVerified, DEFAULTS.notifyVerified),
+    displayName: str(parsed.displayName, DEFAULTS.displayName),
+    daleFirebaseUrl: str(parsed.daleFirebaseUrl, DEFAULTS.daleFirebaseUrl),
+    daleFirebaseSecret: str(parsed.daleFirebaseSecret, DEFAULTS.daleFirebaseSecret),
+    accessCode: str(parsed.accessCode, DEFAULTS.accessCode)
   };
 }
 
@@ -84,6 +92,10 @@ export function saveSettings(s: Settings): void {
   clean.heliusKey = clean.heliusKey.trim();
   clean.etherscanKey = clean.etherscanKey.trim();
   clean.cieloKey = clean.cieloKey.trim();
+  clean.displayName = clean.displayName.trim();
+  clean.daleFirebaseUrl = clean.daleFirebaseUrl.trim().replace(/\/+$/, ''); // no trailing slash
+  clean.daleFirebaseSecret = clean.daleFirebaseSecret.trim();
+  clean.accessCode = clean.accessCode.trim();
   // Clamp numerics to sane ranges.
   clean.defaultBuyers = [50, 100, 200].includes(clean.defaultBuyers) ? clean.defaultBuyers : 50;
   clean.trendingRefreshSec = Math.max(10, Math.min(300, Math.round(clean.trendingRefreshSec)));

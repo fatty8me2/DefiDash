@@ -15,3 +15,10 @@ apikeys.txt
 
 # Local editor/tool state
 .claude/
+
+# Internal working notes — kept local, NOT pushed (contain operational details
+# like access-gate codes and the Firebase URL).
+CLAUDE.md
+MEMORY.md
+BACKLOG.md
+RESTART.md

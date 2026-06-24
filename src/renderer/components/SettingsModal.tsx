@@ -14,17 +14,23 @@ const DEFAULTS: AppSettings = {
   trendingMaxFdvUsd: 0,
   trendingMinLiqUsd: 0,
   launchOnStartup: false,
-  notifyVerified: false
+  notifyVerified: false,
+  displayName: '',
+  daleFirebaseUrl: '',
+  daleFirebaseSecret: '',
+  accessCode: ''
 };
 
 export default function SettingsModal({
   open,
   onClose,
-  onSaved
+  onSaved,
+  onShowWhatsNew
 }: {
   open: boolean;
   onClose: () => void;
   onSaved: () => void;
+  onShowWhatsNew?: () => void;
 }) {
   const [s, setS] = useState<AppSettings>(DEFAULTS);
   const [saving, setSaving] = useState(false);
@@ -76,7 +82,15 @@ export default function SettingsModal({
           <div>
             <h1 className="text-base font-semibold text-slate-100">Settings</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              {version ? `Wallet Lookup v${version}` : 'Wallet Lookup'}
+              {version ? `Defi Dashboard v${version}` : 'Defi Dashboard'}
+              {onShowWhatsNew && (
+                <>
+                  {' · '}
+                  <button onClick={onShowWhatsNew} className="text-emerald-400 hover:text-emerald-300 underline">
+                    What&apos;s new
+                  </button>
+                </>
+              )}
             </p>
           </div>
           <button
@@ -191,6 +205,52 @@ export default function SettingsModal({
             min={0}
             placeholder="0 = no floor"
             help="Hide tokens with liquidity below this."
+          />
+        </Section>
+
+        <Section
+          title="Dale (shared charts)"
+          subtitle="A live charts ledger shared with your crew via a Firebase Realtime Database. Enter the SAME URL + secret on all three machines; set your own name so others see who shared what. Stored encrypted on-device."
+        >
+          <Field
+            label="Your name"
+            value={s.displayName}
+            onChange={(v) => set('displayName', v)}
+            placeholder="e.g. Mickey"
+            help="Shown on charts you add to Dale."
+          />
+          <Field
+            label="Firebase Realtime DB URL"
+            value={s.daleFirebaseUrl}
+            onChange={(v) => set('daleFirebaseUrl', v)}
+            placeholder="https://your-app-default-rtdb.firebaseio.com"
+            help={
+              <>
+                Create a free Realtime Database at{' '}
+                <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" className="text-emerald-400 hover:underline">console.firebase.google.com</a>{' '}
+                and paste its URL. All three clients use the same one.
+              </>
+            }
+          />
+          <Field
+            label="Firebase auth secret (optional)"
+            value={s.daleFirebaseSecret}
+            onChange={(v) => set('daleFirebaseSecret', v)}
+            placeholder="database secret / token — leave blank if rules are open"
+            help="From Project Settings → Service accounts → Database secrets. Leave blank only if your DB rules allow public read/write."
+          />
+        </Section>
+
+        <Section
+          title="Access"
+          subtitle="The code that unlocks this app on this device. Assigned by the owner; changing it to an invalid code will lock the app until a valid one is entered."
+        >
+          <Field
+            label="Access code"
+            value={s.accessCode}
+            onChange={(v) => set('accessCode', v)}
+            placeholder="your access code"
+            help="Stored encrypted on-device. The owner can revoke this code at any time."
           />
         </Section>
 

@@ -45,6 +45,12 @@ export function initAutoUpdates(): void {
     console.log('[updater] skipped (not packaged / dev mode)');
     return;
   }
+  // macOS builds are unsigned, and Squirrel.Mac auto-update requires signing —
+  // so on Mac new versions are installed manually from the releases page.
+  if (process.platform === 'darwin') {
+    console.log('[updater] auto-update disabled on macOS (unsigned build)');
+    return;
+  }
   wireEvents();
   autoUpdater.checkForUpdates().catch((err) => {
     console.error('[updater] check failed:', err?.message ?? err);
@@ -58,6 +64,16 @@ export async function checkForUpdatesManual(): Promise<void> {
     await dialog.showMessageBox(win!, {
       type: 'info',
       message: 'Updates are only available in the installed app.',
+      buttons: ['OK']
+    });
+    return;
+  }
+  if (process.platform === 'darwin') {
+    await dialog.showMessageBox(win!, {
+      type: 'info',
+      title: 'Updates on macOS',
+      message: 'On macOS, download the latest version from the releases page.',
+      detail: 'https://github.com/fatty8me2/DefiDash/releases/latest',
       buttons: ['OK']
     });
     return;

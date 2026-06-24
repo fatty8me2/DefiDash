@@ -11,17 +11,27 @@ interface Props {
 }
 
 const TABS: { key: FlowTab; label: string; hint: string }[] = [
-  { key: 'top', label: 'Top', hint: 'Highest net ETH inflow (15m)' },
+  { key: 'top', label: 'Top', hint: 'Highest net inflow (15m)' },
   { key: 'early', label: 'Early', hint: 'Most recently active tokens' },
-  { key: 'dipping', label: 'Dipping', hint: 'Largest net ETH outflow (15m)' }
+  { key: 'dipping', label: 'Dipping', hint: 'Largest net outflow (15m)' }
 ];
 
 const CHAINS: { key: EvmFlowChain; label: string }[] = [
   { key: 'ethereum', label: 'Ethereum' },
-  { key: 'base', label: 'Base' }
+  { key: 'base', label: 'Base' },
+  { key: 'bnb', label: 'BNB' }
 ];
 
 const PAGE_SIZE = 24;
+
+// Native quote-asset symbol shown on cards/labels per chain.
+function nativeSym(chain: EvmFlowChain): string {
+  return chain === 'bnb' ? 'BNB' : 'Ξ';
+}
+// DexScreener's chain slug (it uses "bsc" for BNB Chain).
+function dexSlug(chain: EvmFlowChain): string {
+  return chain === 'bnb' ? 'bsc' : chain;
+}
 
 export default function EvmFlowPage({ hasAlchemy, onClickContract, onOpenSettings }: Props) {
   const [chain, setChain] = useState<EvmFlowChain>('ethereum');
@@ -50,11 +60,14 @@ export default function EvmFlowPage({ hasAlchemy, onClickContract, onOpenSetting
   if (!hasAlchemy) {
     return (
       <div className="max-w-2xl mx-auto mt-12 border border-slate-800 rounded-lg p-6 bg-slate-900/40">
-        <h2 className="text-lg font-semibold text-slate-100">ETH Flow needs an Alchemy key</h2>
+        <h2 className="text-lg font-semibold text-slate-100">EVM Flow needs an Alchemy key</h2>
         <p className="text-sm text-slate-300 mt-2">
-          This page streams live DEX trades on Ethereum (Uniswap V2) and Base (Aerodrome, Uniswap V3
-          &amp; V2), ranking tokens by net ETH inflow over the last 15 minutes. It subscribes directly to
-          on-chain swap logs via your Alchemy key — no extra service required.
+          This page streams live DEX trades on Ethereum (Uniswap V2), Base (Aerodrome, Uniswap V3 &amp; V2),
+          and BNB Chain (PancakeSwap V2 &amp; V3), ranking tokens by net native inflow over the last 15
+          minutes. It subscribes directly to on-chain swap logs via your Alchemy key — no extra service required.
+        </p>
+        <p className="text-xs text-slate-500 mt-2">
+          Note: Base and BNB Chain must be enabled on your Alchemy app (free) for those tabs to connect.
         </p>
         <p className="text-sm text-slate-300 mt-4">
           Add your key in{' '}
@@ -76,7 +89,9 @@ export default function EvmFlowPage({ hasAlchemy, onClickContract, onOpenSetting
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-3 flex-wrap">
           <span className="text-xs uppercase tracking-[0.2em] text-slate-400">
-            {chain === 'base' ? 'Base DEX Live · All DEXs' : 'Uniswap V2 Live'}
+            {chain === 'base' ? 'Base DEX Live · All DEXs'
+              : chain === 'bnb' ? 'PancakeSwap Live · V2 & V3'
+              : 'Uniswap V2 Live'}
           </span>
           <div className="flex gap-1">
             {CHAINS.map((c) => (
@@ -120,10 +135,12 @@ export default function EvmFlowPage({ hasAlchemy, onClickContract, onOpenSetting
       {rows.length === 0 ? (
         <div className="text-sm text-slate-500 border border-slate-800 rounded px-4 py-10 text-center">
           {status === 'error'
-            ? 'Stream error — check your Alchemy key in Settings. Retrying…'
+            ? 'Stream error — check your Alchemy key in Settings (Base/BNB must be enabled on your Alchemy app). Retrying…'
             : chain === 'base'
               ? 'Waiting for the first Base trades to roll in… (Aerodrome, Uniswap V3 & V2)'
-              : 'Waiting for the first Uniswap V2 trades to roll in…'}
+              : chain === 'bnb'
+                ? 'Waiting for the first BNB Chain trades to roll in… (PancakeSwap V2 & V3)'
+                : 'Waiting for the first Uniswap V2 trades to roll in…'}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
@@ -154,13 +171,13 @@ function FlowCard({ t, chain, onClick }: { t: EvmFlowToken; chain: EvmFlowChain;
   const buyPct = total > 0 ? (t.buyVolEth / total) * 100 : 50;
   const meta = useEvmTokenMeta(chain, t.address);
 
-  // On Ethereum a click runs the buyer lookup; on Base (no mainnet lookup) it
-  // opens DexScreener instead.
+  // On Ethereum a click runs the buyer lookup; on Base / BNB (no mainnet lookup)
+  // it opens DexScreener instead.
   function handleClick() {
     if (chain === 'ethereum') {
       onClick();
     } else {
-      window.open(`https://dexscreener.com/base/${t.address}`, '_blank', 'noopener,noreferrer');
+      window.open(`https://dexscreener.com/${dexSlug(chain)}/${t.address}`, '_blank', 'noopener,noreferrer');
     }
   }
   const clickHint = chain === 'ethereum'
@@ -194,7 +211,7 @@ function FlowCard({ t, chain, onClick }: { t: EvmFlowToken; chain: EvmFlowChain;
         <span className={`text-xl font-semibold ${positive ? 'text-emerald-400' : 'text-red-400'}`}>
           {positive ? '+' : ''}{fmtEth(t.netInflowEth)}
         </span>
-        <span className="text-[10px] uppercase tracking-wider text-slate-500">Ξ Net Inflow · 15m</span>
+        <span className="text-[10px] uppercase tracking-wider text-slate-500">{nativeSym(chain)} Net Inflow · 15m</span>
       </div>
 
       <Sparkline data={t.spark} positive={positive} />
@@ -251,10 +268,11 @@ function useEvmTokenMeta(chain: EvmFlowChain, address: string): EvmMeta | null {
           };
         }[];
         // Pick the highest-liquidity pair on this chain that carries an info block.
+        const wantChainId = dexSlug(chain);
         let best: (typeof pairs)[number] | null = null;
         let bestLiq = -1;
         for (const p of pairs) {
-          if (p.chainId !== chain || !p.info) continue;
+          if (p.chainId !== wantChainId || !p.info) continue;
           const liq = p.liquidity?.usd ?? 0;
           if (liq > bestLiq) {
             bestLiq = liq;

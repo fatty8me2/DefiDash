@@ -36,7 +36,9 @@ const SWAP_TOPIC_SOLIDLY = '0xb3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf
 // firehose is enormous and would swamp pair resolution); Base gets the full set.
 const CHAIN_TOPICS: Record<EvmFlowChain, string[]> = {
   ethereum: [SWAP_TOPIC_V2],
-  base: [SWAP_TOPIC_V2, SWAP_TOPIC_V3, SWAP_TOPIC_SOLIDLY]
+  base: [SWAP_TOPIC_V2, SWAP_TOPIC_V3, SWAP_TOPIC_SOLIDLY],
+  // BNB Chain: PancakeSwap V2 (Uniswap-V2 fork) + V3 (Uniswap-V3 fork) — same Swap topics.
+  bnb: [SWAP_TOPIC_V2, SWAP_TOPIC_V3]
 };
 
 // ERC-20 / pair function selectors (first 4 bytes of keccak256 of the signature).
@@ -63,7 +65,9 @@ const ETH_PRICE_POLL_MS = 60_000;     // refresh ETH/USD once a minute
 // works across both networks (only the subdomain changes).
 const CHAIN_CONFIG: Record<EvmFlowChain, { sub: string; weth: string; cgId: string }> = {
   ethereum: { sub: 'eth-mainnet', weth: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', cgId: 'ethereum' },
-  base: { sub: 'base-mainnet', weth: '0x4200000000000000000000000000000000000006', cgId: 'ethereum' }
+  base: { sub: 'base-mainnet', weth: '0x4200000000000000000000000000000000000006', cgId: 'ethereum' },
+  // BNB Chain: quote side is WBNB; price in BNB/USD (CoinGecko id "binancecoin").
+  bnb: { sub: 'bnb-mainnet', weth: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', cgId: 'binancecoin' }
 };
 
 interface RawSwap {

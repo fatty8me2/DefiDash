@@ -9,9 +9,16 @@ import LaunchAnalysisPanel from './components/LaunchAnalysisPanel';
 import PumpFlowPage from './components/PumpFlowPage';
 import EvmFlowPage from './components/EvmFlowPage';
 import TrackedWalletsPage from './components/TrackedWalletsPage';
+import TradePage from './components/TradePage';
+import ChartsPage from './components/ChartsPage';
+import ApiUsagePage from './components/ApiUsagePage';
+import AccessGate from './components/AccessGate';
+import ActivityToasts from './components/ActivityToasts';
+import WhatsNewModal from './components/WhatsNewModal';
 import CopyButton from './components/CopyButton';
 import DexScreenerButton from './components/DexScreenerButton';
-import type { AppSettings, BuyerRow, DevWalletInfo, HoneypotReport, LookupResult } from '../shared/types';
+import { CHANGELOG, changesSince, type ChangelogEntry } from './lib/changelog';
+import type { AccessState, AppSettings, BuyerRow, DevWalletInfo, HoneypotReport, LookupResult } from '../shared/types';
 import { isFreshWallet } from './lib/freshWallet';
 
 interface ConfigStatus {
@@ -21,7 +28,7 @@ interface ConfigStatus {
   hasCielo: boolean;
 }
 
-type View = 'dashboard' | 'flow' | 'evmflow' | 'tracked';
+type View = 'dashboard' | 'flow' | 'evmflow' | 'tracked' | 'trade' | 'charts' | 'apiusage';
 
 export default function App() {
   const [result, setResult] = useState<LookupResult | null>(null);
@@ -33,6 +40,38 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [view, setView] = useState<View>('dashboard');
+  const [appVersion, setAppVersion] = useState('');
+  const [whatsNew, setWhatsNew] = useState<ChangelogEntry[] | null>(null);
+  const [access, setAccess] = useState<AccessState | null>(null);
+
+  // Whole-app access gate: seed the current status, then track live updates from
+  // the periodic check. The app stays blocked until status is 'allowed'.
+  useEffect(() => {
+    window.api.accessStatus().then(setAccess).catch(() => undefined);
+    const off = window.api.onAccessUpdate(setAccess);
+    return off;
+  }, []);
+
+  // After an update, show a "What's new" popup once (first launch on a new version).
+  useEffect(() => {
+    window.api.appVersion().then((current) => {
+      setAppVersion(current);
+      const last = localStorage.getItem('lastSeenVersion');
+      if (last !== current) {
+        const entries = changesSince(last, current);
+        if (entries.length) setWhatsNew(entries);
+        localStorage.setItem('lastSeenVersion', current);
+      }
+    }).catch(() => undefined);
+  }, []);
+  // Mint to autofill into the Trade terminal. Wrapped with a nonce so clicking
+  // "Buy" on the same token twice still re-triggers the autofill effect.
+  const [tradeMint, setTradeMint] = useState<{ mint: string; nonce: number } | null>(null);
+
+  function openTrade(mint: string) {
+    setTradeMint({ mint, nonce: Date.now() });
+    setView('trade');
+  }
 
   function refreshConfig() {
     window.api.configStatus().then(setConfig);
@@ -94,8 +133,25 @@ export default function App() {
 
   const keysMissing = config !== null && (!config.hasAlchemy || !config.hasHelius);
 
+  // Block the entire app until access is verified (operator-controlled allowlist).
+  if (!access || access.status !== 'allowed') {
+    return (
+      <AccessGate
+        state={access}
+        onSubmitCode={(code) => window.api.accessSetCode(code).then(setAccess)}
+        onRetry={() => window.api.accessRecheck().then(setAccess).catch(() => undefined)}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
+      <ActivityToasts
+        onClickContract={(mint) => {
+          setView('dashboard');
+          runLookup(mint);
+        }}
+      />
       <header className="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-5">
           <div>
@@ -104,8 +160,11 @@ export default function App() {
           <nav className="flex gap-1">
             <NavTab label="Dashboard" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
             <NavTab label="Pump Flow" active={view === 'flow'} onClick={() => setView('flow')} />
-            <NavTab label="ETH Flow" active={view === 'evmflow'} onClick={() => setView('evmflow')} />
+            <NavTab label="EVM Flow" active={view === 'evmflow'} onClick={() => setView('evmflow')} />
+            <NavTab label="Trade" active={view === 'trade'} onClick={() => setView('trade')} />
+            <NavTab label="Charts" active={view === 'charts'} onClick={() => setView('charts')} />
             <NavTab label="Tracked Wallets" active={view === 'tracked'} onClick={() => setView('tracked')} />
+            <NavTab label="API Usage" active={view === 'apiusage'} onClick={() => setView('apiusage')} />
           </nav>
         </div>
         <div className="flex items-center gap-3">
@@ -133,6 +192,7 @@ export default function App() {
               setView('dashboard');
               runLookup(mint);
             }}
+            onBuy={openTrade}
             onOpenSettings={() => setSettingsOpen(true)}
           />
         ) : view === 'evmflow' ? (
@@ -154,6 +214,22 @@ export default function App() {
             }}
             onOpenSettings={() => setSettingsOpen(true)}
           />
+        ) : view === 'trade' ? (
+          <TradePage
+            key={tradeMint?.nonce ?? 'trade'}
+            hasHelius={!!config?.hasHelius}
+            initialMint={tradeMint?.mint ?? null}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        ) : view === 'charts' ? (
+          <ChartsPage
+            onClickContract={(mint) => {
+              setView('dashboard');
+              runLookup(mint);
+            }}
+          />
+        ) : view === 'apiusage' ? (
+          <ApiUsagePage />
         ) : (
           <>
             {keysMissing && !result && <Welcome onOpenSettings={() => setSettingsOpen(true)} />}
@@ -201,7 +277,15 @@ export default function App() {
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
         onSaved={refreshConfig}
+        onShowWhatsNew={() => {
+          setSettingsOpen(false);
+          setWhatsNew(CHANGELOG); // manual view shows the full history
+        }}
       />
+
+      {whatsNew && (
+        <WhatsNewModal version={appVersion} entries={whatsNew} onClose={() => setWhatsNew(null)} />
+      )}
     </div>
   );
 }

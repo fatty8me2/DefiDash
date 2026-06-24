@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { AppSettings, LiveFeedItem } from '../../shared/types';
+import type { AppSettings, LiveFeedItem, LiveFeedSnapshot } from '../../shared/types';
 import TrendingPanel from './TrendingPanel';
 import CopyButton from './CopyButton';
 
@@ -28,6 +28,44 @@ export default function LiveFeeds({ onClickContract, hasEtherscanKey, settings }
   useEffect(() => {
     window.api.startFeeds();
 
+    // Merge a snapshot of the main-process rolling buffers into local state so
+    // the panels show recent history without starting blank. Merge (rather than
+    // overwrite) so any live event that arrived in between isn't lost; existing
+    // items are newest so they stay on top.
+    const applySnapshot = (snap: LiveFeedSnapshot) => {
+      setV2Items((prev) => {
+        const seen = new Set<string>();
+        const merged: LiveFeedItem[] = [];
+        for (const it of [...prev, ...snap.v2]) {
+          const k = it.pair.toLowerCase();
+          if (seen.has(k)) continue;
+          seen.add(k);
+          merged.push(it);
+        }
+        v2KeysRef.current = seen;
+        return merged.slice(0, MAX_ITEMS);
+      });
+      setVerifiedItems((prev) => {
+        const seen = new Set<string>();
+        const merged: LiveFeedItem[] = [];
+        for (const it of [...prev, ...snap.verified]) {
+          const k = it.contract.toLowerCase();
+          if (seen.has(k)) continue;
+          seen.add(k);
+          merged.push(it);
+        }
+        return merged.slice(0, MAX_ITEMS);
+      });
+      if (snap.v2Status) setV2Status((s) => (s === 'idle' ? snap.v2Status : s));
+      if (snap.verifiedStatus) setVerifiedStatus((s) => (s === 'idle' ? snap.verifiedStatus : s));
+    };
+
+    // Pull the current buffer on mount...
+    window.api.feedsSnapshot().then(applySnapshot).catch(() => { /* live events will fill in */ });
+    // ...and accept pushes from the main process (e.g. when the cold-start
+    // backfill finishes after this initial pull already returned an empty buffer).
+    const offSnapshot = window.api.onFeedsSnapshot(applySnapshot);
+
     const offDeploy = window.api.onV2Deploy((item) => {
       const key = item.pair.toLowerCase();
       if (v2KeysRef.current.has(key)) return;
@@ -52,6 +90,7 @@ export default function LiveFeeds({ onClickContract, hasEtherscanKey, settings }
     });
 
     return () => {
+      offSnapshot();
       offDeploy();
       offUpdate();
       offStatus();
@@ -177,8 +216,11 @@ function FeedRow({
   onClickContract?: (contract: string) => void;
   showVerifiedTime?: boolean;
 }) {
-  const stamp = showVerifiedTime && item.verifiedAt ? item.verifiedAt : item.blockTime;
-  const label = showVerifiedTime && item.verifiedAt ? 'verified' : 'deployed';
+  // Always show the launch (deploy) time so it's accurate for backfilled items;
+  // the ✓ marks that the source is verified. Using verifiedAt here would show
+  // "just now" for tokens that launched hours ago but were only checked on startup.
+  const stamp = item.blockTime;
+  const verified = !!(showVerifiedTime && item.verifiedAt);
 
   return (
     <li
@@ -194,7 +236,7 @@ function FeedRow({
         {item.name ?? ''}
       </span>
       <span className="ml-auto mono text-slate-500">{shortAddr(item.contract)}</span>
-      <span className="text-slate-500 w-16 text-right">{timeAgo(stamp)} {label === 'verified' ? '✓' : ''}</span>
+      <span className="text-slate-500 w-16 text-right">{timeAgo(stamp)} {verified ? '✓' : ''}</span>
     </li>
   );
 }

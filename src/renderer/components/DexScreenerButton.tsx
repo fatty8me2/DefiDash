@@ -3,8 +3,8 @@ import type { Chain } from '../../shared/types';
 import { DEXSCREENER_LOGO } from '../assets/dexscreenerLogo';
 
 // DexScreener supports more networks than our lookup engine, so this button
-// accepts a slightly wider set (adds 'base' for the EVM Flow page).
-export type DexChain = Chain | 'base';
+// accepts a slightly wider set (adds 'base' + 'bnb' for the EVM Flow page).
+export type DexChain = Chain | 'base' | 'bnb';
 
 interface Props {
   address: string;
@@ -17,7 +17,8 @@ interface Props {
 const CHAIN_SLUG: Record<DexChain, string> = {
   ethereum: 'ethereum',
   solana: 'solana',
-  base: 'base'
+  base: 'base',
+  bnb: 'bsc' // DexScreener's slug for BNB Chain
 };
 
 // Small inline button that opens the token's DexScreener page in the system

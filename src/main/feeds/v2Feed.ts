@@ -14,6 +14,15 @@ const QUOTE_TOKENS = new Set([
 const POLL_INTERVAL_MS = 12_000;  // ~one ETH block
 const MAX_BLOCK_LAG = 200;        // safety cap if we fall behind
 
+// Cold-start backfill: seed the panel with recent PairCreated events on launch.
+// Alchemy's FREE tier caps eth_getLogs at a 10-block range, so we scan backward
+// from the head in 10-block windows and stop once we've collected enough (or hit
+// the request cap, which bounds startup time / compute-unit usage).
+const BACKFILL_TARGET = 10;
+const BACKFILL_CHUNK = 10;          // free-tier eth_getLogs max range
+const BACKFILL_MAX_REQUESTS = 70;   // ~700 blocks back, ~2s of sequential calls
+const SECONDS_PER_BLOCK = 12;
+
 function topicToAddress(topic: string): string {
   return '0x' + topic.slice(-40).toLowerCase();
 }
@@ -105,6 +114,9 @@ export class V2Feed extends EventEmitter {
       this.lastBlock = parseInt(head, 16);
       console.log(`[v2feed] head block ${this.lastBlock}, beginning polling`);
       this.emit('status', 'connected');
+      // Seed the panel with recent history so it's populated immediately on a
+      // cold start, instead of waiting for the next live PairCreated event.
+      await this.backfill(this.lastBlock);
     } catch (e) {
       console.log(`[v2feed] bootstrap failed: ${(e as Error).message}`);
       this.emit('status', 'error');
@@ -113,6 +125,76 @@ export class V2Feed extends EventEmitter {
     }
     if (!this.running) return;
     this.timer = setInterval(() => this.tick().catch(() => undefined), POLL_INTERVAL_MS);
+  }
+
+  // One-time historical scan run at startup. Walks backward from the head in
+  // chunks until we've gathered BACKFILL_TARGET recent PairCreated events (or
+  // exhausted BACKFILL_MAX_BLOCKS), then emits them oldest→newest so the buffer
+  // ends up most-recent-first. Block times are approximated from the head time
+  // to avoid an eth_getBlockByNumber call per event.
+  private async backfill(head: number): Promise<void> {
+    try {
+      const headBlock = await rpc<{ timestamp?: string }>(
+        this.alchemyKey,
+        'eth_getBlockByNumber',
+        [toHex(head), false]
+      );
+      const headTimeSec = headBlock?.timestamp
+        ? parseInt(headBlock.timestamp, 16)
+        : Math.floor(Date.now() / 1000);
+
+      const collected: RpcLog[] = [];
+      let toBlock = head;
+      let requests = 0;
+
+      while (
+        toBlock > 0 &&
+        collected.length < BACKFILL_TARGET &&
+        requests < BACKFILL_MAX_REQUESTS &&
+        this.running
+      ) {
+        const fromBlock = Math.max(0, toBlock - BACKFILL_CHUNK + 1);
+        requests++;
+        let logs: RpcLog[];
+        try {
+          logs = await rpc<RpcLog[]>(this.alchemyKey, 'eth_getLogs', [{
+            fromBlock: toHex(fromBlock),
+            toBlock: toHex(toBlock),
+            address: V2_FACTORY,
+            topics: [PAIR_CREATED_TOPIC]
+          }]);
+        } catch (chunkErr) {
+          // e.g. a transient rate-limit (429). Keep whatever we've gathered.
+          console.log(`[v2feed] backfill chunk ${fromBlock}..${toBlock} error: ${(chunkErr as Error).message}`);
+          break;
+        }
+        // Logs come oldest→newest; we want the newest ones first.
+        for (let i = logs.length - 1; i >= 0; i--) {
+          collected.push(logs[i]);
+          if (collected.length >= BACKFILL_TARGET) break;
+        }
+        toBlock = fromBlock - 1;
+      }
+
+      if (!this.running) return;
+
+      // Emit oldest→newest so the downstream buffer (which prepends) ends
+      // most-recent-first, matching live-event ordering.
+      const ordered = collected.slice(0, BACKFILL_TARGET).reverse();
+      console.log(`[v2feed] backfill seeded ${ordered.length} recent PairCreated event(s)`);
+      for (const log of ordered) {
+        const blockNum = log.blockNumber ? parseInt(log.blockNumber, 16) : head;
+        const blockTime = headTimeSec - Math.max(0, head - blockNum) * SECONDS_PER_BLOCK;
+        this.handleLog(log, blockTime);
+      }
+    } catch (e) {
+      console.log(`[v2feed] backfill skipped: ${(e as Error).message}`);
+    } finally {
+      // Signal that the one-time historical seed is done. The main process uses
+      // this to push a fresh snapshot to the renderer, covering the race where
+      // the renderer fetched the (then-empty) buffer before backfill finished.
+      this.emit('backfill');
+    }
   }
 
   private async tick(): Promise<void> {
@@ -130,20 +212,28 @@ export class V2Feed extends EventEmitter {
       const head = parseInt(headHex, 16);
       if (head <= this.lastBlock) return;
 
-      const fromBlock = Math.max(this.lastBlock + 1, head - MAX_BLOCK_LAG);
-      const toBlock = head;
+      const startBlock = Math.max(this.lastBlock + 1, head - MAX_BLOCK_LAG);
 
-      const logs = await rpc<RpcLog[]>(this.alchemyKey, 'eth_getLogs', [{
-        fromBlock: toHex(fromBlock),
-        toBlock: toHex(toBlock),
-        address: V2_FACTORY,
-        topics: [PAIR_CREATED_TOPIC]
-      }]);
+      // Alchemy's free tier caps eth_getLogs at a 10-block range, so walk from
+      // the last-seen block to the head in <=10-block windows. Normally this is
+      // a single tiny window; after a sleep/lag it catches up in chunks instead
+      // of issuing one oversized (and rejected) request.
+      const logs: RpcLog[] = [];
+      for (let from = startBlock; from <= head; from += BACKFILL_CHUNK) {
+        const to = Math.min(head, from + BACKFILL_CHUNK - 1);
+        const chunk = await rpc<RpcLog[]>(this.alchemyKey, 'eth_getLogs', [{
+          fromBlock: toHex(from),
+          toBlock: toHex(to),
+          address: V2_FACTORY,
+          topics: [PAIR_CREATED_TOPIC]
+        }]);
+        logs.push(...chunk);
+      }
 
-      this.lastBlock = toBlock;
+      this.lastBlock = head;
       this.emit('status', 'connected');
 
-      console.log(`[v2feed] tick blocks ${fromBlock}..${toBlock} → ${logs.length} raw PairCreated log(s)`);
+      console.log(`[v2feed] tick blocks ${startBlock}..${head} → ${logs.length} raw PairCreated log(s)`);
       for (const log of logs) {
         this.handleLog(log);
       }
@@ -153,7 +243,7 @@ export class V2Feed extends EventEmitter {
     }
   }
 
-  private handleLog(log: RpcLog): void {
+  private handleLog(log: RpcLog, blockTimeOverride?: number): void {
     if (!log.topics || log.topics.length < 3 || !log.data) return;
     const token0 = topicToAddress(log.topics[1]);
     const token1 = topicToAddress(log.topics[2]);
@@ -176,7 +266,7 @@ export class V2Feed extends EventEmitter {
       pair,
       symbol: null,
       name: null,
-      blockTime: Math.floor(Date.now() / 1000),
+      blockTime: blockTimeOverride ?? Math.floor(Date.now() / 1000),
       txHash: log.transactionHash ?? ''
     };
 

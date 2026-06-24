@@ -20,6 +20,12 @@ export interface AppSettings {
   // System
   launchOnStartup: boolean;
   notifyVerified: boolean;        // desktop notification on new verified launch
+  // Dale — shared charts ledger synced across clients via Firebase Realtime DB.
+  displayName: string;            // who you are in the shared ledger (e.g. Mickey / Cam)
+  daleFirebaseUrl: string;        // Firebase Realtime DB base URL (same for all 3 clients)
+  daleFirebaseSecret: string;     // DB auth secret/token (shared); blank = open rules
+  // Whole-app access gate — per-person code checked against the operator's allowlist.
+  accessCode: string;             // this install's access code (assigned by the operator)
 }
 
 // A wallet the user has pinned to the Tracked Wallets dashboard. Persisted
@@ -29,6 +35,21 @@ export interface TrackedWallet {
   chain: Chain;
   label: string;      // user-given nickname, may be ''
   addedAt: number;    // unix seconds
+}
+
+// A buy/sell detected on a tracked wallet — surfaced as an in-app toast.
+export interface TrackedActivity {
+  id: string;                 // signature (sol) or `${hash}:${token}:${action}` (eth) — for dedup
+  chain: Chain;
+  wallet: string;
+  label: string;              // user label, or short address
+  action: 'buy' | 'sell';
+  tokenSymbol: string | null;
+  tokenMint: string;          // token mint / contract
+  tokenAmount: number | null; // human units of the token
+  nativeAmount: number | null; // SOL/ETH spent (buy) or received (sell)
+  nativeSymbol: string;       // 'SOL' | 'ETH'
+  timestamp: number;          // unix seconds
 }
 
 export interface BuyerRow {
@@ -113,6 +134,16 @@ export interface LiveFeedItem {
   blockTime: number;           // unix seconds (deploy time, approximated via PairCreated block)
   txHash: string;              // the PairCreated tx
   verifiedAt?: number;         // unix seconds when Etherscan reported it verified
+}
+
+// A point-in-time snapshot of the main-process rolling buffers for the V2
+// Deploys + Verified Launches feeds. The renderer fetches this when the
+// Dashboard mounts so the panels show recent history instead of starting blank.
+export interface LiveFeedSnapshot {
+  v2: LiveFeedItem[];          // most-recent-first
+  verified: LiveFeedItem[];    // most-recent-first
+  v2Status: string;
+  verifiedStatus: string;
 }
 
 export type HoneypotVerdict = 'safe' | 'caution' | 'danger' | 'unknown';
@@ -236,8 +267,8 @@ export interface FlowSnapshot {
   updatedAt: number;              // unix sec
 }
 
-// --- EVM Flow (live Uniswap V2 net-ETH-inflow tracker via Alchemy logs, ETH + Base) ---
-export type EvmFlowChain = 'ethereum' | 'base';
+// --- EVM Flow (live net-native-inflow tracker via Alchemy logs: ETH + Base + BNB) ---
+export type EvmFlowChain = 'ethereum' | 'base' | 'bnb';
 
 export interface EvmFlowToken {
   address: string;                // ERC-20 contract address
@@ -261,4 +292,128 @@ export interface EvmFlowSnapshot {
   windowMinutes: number;
   ethPriceUsd: number | null;     // derived from WETH trade USD values
   updatedAt: number;              // unix sec
+}
+
+// --- Trading (native Jupiter swap terminal, Solana-only) ---
+// The private key lives ONLY in the main process (encrypted at rest via
+// safeStorage); the renderer only ever sees the public address + balances.
+export type TradeSide = 'buy' | 'sell';
+
+// Trade speed / priority-fee tier. Higher = pays a bigger priority fee so the
+// swap lands faster in congestion (and costs more SOL).
+export type TradeSpeed = 'normal' | 'fast' | 'turbo';
+
+export interface TradeWalletInfo {
+  exists: boolean;
+  address: string | null;        // public key, base58 (safe to expose)
+  solBalance: number | null;     // SOL, null until/unless fetched
+}
+
+// One wallet in the multi-wallet store (public address + whether it's active).
+export interface TradeWalletSummary {
+  address: string;
+  active: boolean;
+}
+
+export interface TradeQuote {
+  side: TradeSide;
+  mint: string;                  // the SPL token being bought/sold
+  inputMint: string;
+  outputMint: string;
+  inUiAmount: number;            // human units (SOL for buy, token for sell)
+  outUiAmount: number;           // human units received
+  priceImpactPct: number | null; // 0..1 (e.g. 0.012 = 1.2%)
+  slippageBps: number;
+  routeLabels: string[];         // AMM labels along the route
+  usdValue: number | null;       // Jupiter's swapUsdValue if present
+}
+
+export interface TradeResult {
+  ok: boolean;
+  signature: string | null;
+  error: string | null;
+}
+
+// Per-mint balance the connected trading wallet holds (for Sell + Max).
+export interface TradeTokenBalance {
+  mint: string;
+  uiAmount: number;              // human units held
+  decimals: number;
+}
+
+// A recent on-chain swap for a token (for the Charts transactions drawer).
+export interface TokenTrade {
+  signature: string;
+  timestamp: number;          // unix seconds
+  action: 'buy' | 'sell';
+  tokenAmount: number;        // human units of the token traded
+  solAmount: number | null;   // SOL spent (buy) / received (sell); null for non-SOL routes
+  trader: string;             // fee payer (the trader)
+}
+
+// A fungible SPL token held by the trading wallet (for the holdings list).
+export interface TradeHolding {
+  mint: string;
+  symbol: string | null;
+  name: string | null;
+  uiAmount: number;              // human units held
+  decimals: number;
+  usdValue: number | null;       // total USD value if Helius has a price
+}
+
+// ── API usage metering (the "API Usage" page) ──────────────────────────────
+// Locally-counted requests this app has made to each provider, within the app's
+// own rolling windows. See src/main/apiUsage.ts for how these are tallied.
+export interface ApiUsageWindow {
+  used: number;
+  limit: number | null;          // documented free-tier cap, or null when unknown (count only)
+}
+export interface ApiProviderUsage {
+  id: string;
+  label: string;
+  keyed: boolean;                // provider requires an API key
+  configured: boolean;           // key present (always true for keyless providers)
+  note?: string;                 // human-readable limit caveat
+  docsUrl?: string;              // provider dashboard/docs link
+  minute: ApiUsageWindow;        // requests in the last 60s vs soft rate cap
+  day: ApiUsageWindow;
+  month: ApiUsageWindow;
+  total: number;                 // all-time requests since metering began
+}
+export interface ApiUsageSnapshot {
+  resetDay: string;              // 'YYYY-MM-DD' the day counters last reset
+  resetMonth: string;            // 'YYYY-MM' the month counters last reset
+  providers: ApiProviderUsage[];
+}
+
+// ── Dale: shared charts ledger (Firebase Realtime DB) ──────────────────────
+// A running list of charts shared live between all configured clients. Anyone
+// can add or remove; entries are labeled with who added them.
+export interface DaleEntry {
+  id: string;        // Firebase push key (stable across clients)
+  address: string;   // token mint (Solana) or 0x contract (ETH)
+  addedBy: string;   // displayName of whoever added it
+  addedAt: number;   // unix ms
+}
+export interface DaleSnapshot {
+  entries: DaleEntry[];   // newest first
+  status: DaleStatus;
+}
+// 'off' = not configured · 'connecting' · 'live' · 'error' (with reason)
+export type DaleStatus = 'off' | 'connecting' | 'live' | `error: ${string}`;
+
+// ── Whole-app access gate ──────────────────────────────────────────────────
+// The app checks a per-person code against the operator's Firebase allowlist on
+// launch + periodically; the operator revokes by flipping the code's `allowed`
+// flag. See src/main/accessGate.ts.
+//  checking     — verifying (or couldn't reach the server yet)
+//  allowed      — code is on the allowlist; app unlocked
+//  revoked      — code missing or allowed=false; locked
+//  unconfigured — no code entered yet (first run); prompt for one
+//  stale        — was allowed but offline past the grace window; locked until online
+export type AccessStatus = 'checking' | 'allowed' | 'revoked' | 'unconfigured' | 'stale';
+export interface AccessState {
+  status: AccessStatus;
+  name: string | null;   // display name from the allowlist entry, if any
+  message?: string;       // optional human-readable detail (e.g. offline notice)
 }

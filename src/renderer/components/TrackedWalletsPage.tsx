@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import type { Chain, TrackedWallet, WalletDetail } from '../../shared/types';
+import type { Chain, TrackedActivity, TrackedWallet, WalletDetail } from '../../shared/types';
 import CopyButton from './CopyButton';
+import { loadHistory, clearHistory } from '../lib/activityHistory';
 
 interface Props {
   hasAlchemy: boolean;
@@ -157,6 +158,8 @@ export default function TrackedWalletsPage({ hasAlchemy, hasHelius, onClickContr
 
       {addErr && <div className="text-xs text-red-400">{addErr}</div>}
 
+      <ActivityHistoryPanel onClickContract={onClickContract} />
+
       {wallets.length === 0 ? (
         <div className="text-sm text-slate-500 border border-slate-800 rounded px-4 py-10 text-center">
           No wallets tracked yet. Paste an address above to pin it — you'll see its holdings, funding
@@ -176,6 +179,86 @@ export default function TrackedWalletsPage({ hasAlchemy, hasHelius, onClickContr
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// Persistent list of buy/sell notifications received from tracked wallets.
+function ActivityHistoryPanel({ onClickContract }: { onClickContract: (address: string) => void }) {
+  const [history, setHistory] = useState<TrackedActivity[]>(() => loadHistory());
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    const sync = () => setHistory(loadHistory());
+    window.addEventListener('tracked:history-changed', sync);
+    window.addEventListener('focus', sync);
+    return () => {
+      window.removeEventListener('tracked:history-changed', sync);
+      window.removeEventListener('focus', sync);
+    };
+  }, []);
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40">
+      <div className="px-3 py-2 border-b border-slate-800 flex items-center gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">Tracked wallet activity</span>
+        <span className="text-[10px] text-slate-500">{history.length}</span>
+        <div className="ml-auto flex items-center gap-2">
+          {history.length > 0 && (
+            <button
+              onClick={() => clearHistory()}
+              className="text-[11px] px-2 py-0.5 rounded border border-slate-700 hover:border-red-500 text-slate-400 hover:text-red-300"
+            >
+              Clear
+            </button>
+          )}
+          <button
+            onClick={() => setCollapsed((v) => !v)}
+            className="text-[11px] px-2 py-0.5 rounded border border-slate-700 text-slate-400 hover:border-slate-500"
+          >
+            {collapsed ? 'Show' : 'Hide'}
+          </button>
+        </div>
+      </div>
+      {!collapsed &&
+        (history.length === 0 ? (
+          <div className="text-xs text-slate-500 px-3 py-6 text-center">
+            No buy/sell notifications yet. When a tracked wallet trades while the app is open, it'll show up here.
+          </div>
+        ) : (
+          <ul className="divide-y divide-slate-800/60 max-h-80 overflow-y-auto">
+            {history.map((a) => {
+              const buy = a.action === 'buy';
+              const token = a.tokenSymbol || shortAddr(a.tokenMint);
+              return (
+                <li
+                  key={a.id}
+                  onClick={() => onClickContract(a.tokenMint)}
+                  title="Look up this token"
+                  className="px-3 py-1.5 flex items-center gap-2 text-xs cursor-pointer hover:bg-slate-800/40"
+                >
+                  <span
+                    className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 ${
+                      buy ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
+                    }`}
+                  >
+                    {a.action}
+                  </span>
+                  <span className="text-slate-200 font-medium truncate max-w-[26%]">{a.label}</span>
+                  <span className="text-slate-500 shrink-0">{buy ? 'bought' : 'sold'}</span>
+                  <span className="text-slate-100 font-medium truncate max-w-[22%]">{token}</span>
+                  {a.nativeAmount !== null && (
+                    <span className="text-slate-500 shrink-0">
+                      {fmtAmt(a.nativeAmount)} {a.nativeSymbol}
+                    </span>
+                  )}
+                  <span className="text-slate-600 shrink-0">{a.chain === 'solana' ? '◎' : 'Ξ'}</span>
+                  <span className="ml-auto text-slate-600 shrink-0">{ageStr(a.timestamp)}</span>
+                </li>
+              );
+            })}
+          </ul>
+        ))}
     </div>
   );
 }

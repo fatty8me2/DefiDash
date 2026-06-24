@@ -3,10 +3,14 @@ import type { FlowSnapshot, FlowToken } from '../../shared/types';
 import CopyButton from './CopyButton';
 import DexScreenerButton from './DexScreenerButton';
 import SocialLink from './SocialLink';
+import { loadWatchlist, saveWatchlist } from '../lib/watchlist';
+import { useWatchlistDex } from '../lib/useWatchlistDex';
+import { detectWatchChain, isEthAddr } from '../lib/addr';
 
 interface Props {
   hasHelius: boolean;
   onClickContract: (mint: string) => void;
+  onBuy: (mint: string) => void;
   onOpenSettings: () => void;
 }
 
@@ -27,13 +31,31 @@ const PAGE_SIZE = 24;
 // pump.fun tokens graduate to Raydium when the bonding curve fills (~$69k mcap).
 const GRADUATION_MCAP_USD = 69_000;
 
+// Custom drag-data type stamped on cards dragged FROM the watchlist, so the feed
+// area can tell a remove-drag apart from a normal pin-drag and act accordingly.
+const WATCHLIST_REMOVE_TYPE = 'application/x-watchlist-remove';
+
+// A stand-in FlowToken for a pinned mint we have no live data for yet (e.g. one
+// restored from a previous session before its first trade arrives this session).
+export function makePlaceholderToken(mint: string): FlowToken {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    mint, symbol: null, name: null, uri: null,
+    netInflowSol: 0, buyVolSol: 0, sellVolSol: 0,
+    txCount: 0, buyCount: 0, sellCount: 0,
+    priceUsd: null, marketCapUsd: null,
+    firstSeen: now, lastTrade: now,
+    spark: [], bundledPct: null, bundleWallets: 0
+  };
+}
+
 // Shared sizing for the small action buttons on each tile (socials / lookup /
 // copy). Bumped up from w-4 so they fill the card's corner row more comfortably.
 const ACTION_BTN =
   'inline-flex items-center justify-center w-6 h-6 rounded text-sm leading-none ' +
   'text-slate-400 hover:text-emerald-400 hover:bg-slate-800/60 shrink-0';
 
-export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSettings }: Props) {
+export default function PumpFlowPage({ hasHelius, onClickContract, onBuy, onOpenSettings }: Props) {
   const [tab, setTab] = useState<SortKey>('top');
   const [snap, setSnap] = useState<FlowSnapshot | null>(null);
   const [status, setStatus] = useState<string>('idle');
@@ -43,31 +65,111 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
   const [minMc, setMinMc] = useState('');
   const [maxMc, setMaxMc] = useState('');
 
+  // Watchlist: a user-curated set of mints pinned to the left rail so they can be
+  // watched closely. Persisted across sessions. `pinnedData` keeps the last-known
+  // FlowToken for each pinned mint so a card still renders (frozen) even after the
+  // token drops out of the live 15-minute window.
+  const [pinned, setPinned] = useState<string[]>(() => loadWatchlist());
+  const [pinnedData, setPinnedData] = useState<Map<string, FlowToken>>(new Map());
+  // True while a card dragged out of the watchlist is hovering the feed (drop = remove).
+  const [removeOver, setRemoveOver] = useState(false);
+
   useEffect(() => {
     if (!hasHelius) return;
-    window.api.startFlow();
+    window.api.flowAcquire();
+    // Seed instantly from the background stream's current snapshot so returning
+    // to this page doesn't start blank / stale.
+    window.api.flowSnapshot().then((s) => { if (s && !pausedRef.current) setSnap(s); }).catch(() => undefined);
     // While paused we keep the stream running in the background but stop
     // applying snapshots, so the tiles freeze for inspection.
     const offUpdate = window.api.onFlowUpdate((s) => { if (!pausedRef.current) setSnap(s); });
     const offStatus = window.api.onFlowStatus(setStatus);
+    // Release on unmount — the stream stays alive across quick navigation (grace
+    // period) and auto-pauses once nothing's watching it.
     return () => {
       offUpdate();
       offStatus();
-      window.api.stopFlow();
+      window.api.flowRelease();
     };
   }, [hasHelius]);
+
+  // Persist the watchlist whenever it changes.
+  useEffect(() => { saveWatchlist(pinned); }, [pinned]);
+
+  // DexScreener keeps pinned coins' price/market-cap fresh even when they're
+  // outside the live pump.fun window, so the watchlist never goes stale.
+  const dexData = useWatchlistDex(pinned);
+
+  // Keep the data for pinned mints fresh: prefer live firehose data; otherwise
+  // overlay current DexScreener price/mcap onto the last-known card.
+  useEffect(() => {
+    setPinnedData((prev) => {
+      const next = new Map<string, FlowToken>();
+      const byMint = new Map((snap?.tokens ?? []).map((t) => [t.mint, t]));
+      for (const mint of pinned) {
+        const live = byMint.get(mint);
+        if (live) { next.set(mint, live); continue; }
+        const base = prev.get(mint) ?? makePlaceholderToken(mint);
+        const dex = dexData.get(mint);
+        next.set(mint, dex ? {
+          ...base,
+          symbol: base.symbol ?? dex.symbol,
+          name: base.name ?? dex.name,
+          priceUsd: dex.priceUsd ?? base.priceUsd,
+          marketCapUsd: dex.marketCapUsd ?? base.marketCapUsd,
+          lastTrade: Math.floor(Date.now() / 1000)
+        } : base);
+      }
+      return next;
+    });
+  }, [snap, pinned, dexData]);
+
+  const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
+  // A coin is "live" (not stale) if it's in the firehose window OR DexScreener
+  // has fresh data for it.
+  const liveMints = useMemo(
+    () => new Set([...(snap?.tokens ?? []).map((t) => t.mint), ...dexData.keys()]),
+    [snap, dexData]
+  );
+
+  function addPin(mint: string, seed?: FlowToken) {
+    setPinned((p) => (p.includes(mint) ? p : [...p, mint]));
+    const token = seed ?? snap?.tokens.find((t) => t.mint === mint);
+    if (token) setPinnedData((prev) => new Map(prev).set(mint, token));
+  }
+  function removePin(mint: string) {
+    setPinned((p) => p.filter((m) => m !== mint));
+  }
+  function togglePin(t: FlowToken) {
+    if (pinnedSet.has(t.mint)) removePin(t.mint);
+    else addPin(t.mint, t);
+  }
 
   function togglePause() {
     setPaused((p) => { pausedRef.current = !p; return !p; });
   }
+
+  // Spacebar toggles pause/resume while the Pump Flow page is open — unless the
+  // user is typing in the search / market-cap filter inputs.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      setPaused((p) => { pausedRef.current = !p; return !p; });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Restart the live stream from a clean slate (clears the rolling window).
   function refresh() {
     pausedRef.current = false;
     setPaused(false);
     setSnap(null);
-    window.api.stopFlow();
-    window.api.startFlow();
+    window.api.flowRestart();
   }
 
   const rows = useMemo(() => {
@@ -145,7 +247,7 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
           <div className="flex gap-1">
             <button
               onClick={togglePause}
-              title={paused ? 'Resume live updates' : 'Pause live updates (freeze the tiles)'}
+              title={paused ? 'Resume live updates (spacebar)' : 'Pause live updates — freeze the tiles (spacebar)'}
               className={`px-2.5 py-1 rounded text-xs border ${
                 paused
                   ? 'border-amber-500 text-amber-300 bg-amber-500/10'
@@ -204,26 +306,176 @@ export default function PumpFlowPage({ hasHelius, onClickContract, onOpenSetting
         )}
       </div>
 
-      {rows.length === 0 ? (
-        <div className="text-sm text-slate-500 border border-slate-800 rounded px-4 py-10 text-center">
-          {status === 'error'
-            ? 'Stream error — check your Helius key in Settings. Retrying…'
-            : filtersActive
-              ? 'No tokens match your filters.'
-              : 'Waiting for the first trades to roll in…'}
+      <div className="flex items-start gap-4">
+        <Watchlist
+          mints={pinned}
+          data={pinnedData}
+          liveMints={liveMints}
+          onDropMint={(m) => addPin(m)}
+          onRemove={removePin}
+          onClickContract={onClickContract}
+          onBuy={onBuy}
+        />
+
+        <div
+          className={`flex-1 min-w-0 rounded transition-colors ${removeOver ? 'ring-1 ring-red-500/50 bg-red-500/5' : ''}`}
+          onDragOver={(e) => {
+            // Only react to cards dragged out of the watchlist (carry the remove type).
+            if (e.dataTransfer.types.includes(WATCHLIST_REMOVE_TYPE)) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+              if (!removeOver) setRemoveOver(true);
+            }
+          }}
+          onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setRemoveOver(false); }}
+          onDrop={(e) => {
+            const mint = e.dataTransfer.getData(WATCHLIST_REMOVE_TYPE);
+            if (mint) { e.preventDefault(); removePin(mint); }
+            setRemoveOver(false);
+          }}
+        >
+          {removeOver && (
+            <div className="mb-2 rounded border border-dashed border-red-500/60 bg-red-500/5 px-3 py-2 text-center text-xs text-red-300">
+              Drop here to remove from the watchlist
+            </div>
+          )}
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-500 border border-slate-800 rounded px-4 py-10 text-center">
+              {status === 'error'
+                ? 'Stream error — check your Helius key in Settings. Retrying…'
+                : filtersActive
+                  ? 'No tokens match your filters.'
+                  : 'Waiting for the first trades to roll in…'}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {rows.map((t) => (
+                <FlowCard
+                  key={t.mint}
+                  t={t}
+                  onClick={() => openPhoton(t.mint)}
+                  onLookup={() => onClickContract(t.mint)}
+                  onBuy={() => onBuy(t.mint)}
+                  draggable
+                  pinned={pinnedSet.has(t.mint)}
+                  onTogglePin={() => togglePin(t)}
+                />
+              ))}
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {rows.map((t) => (
-            <FlowCard
-              key={t.mint}
-              t={t}
-              onClick={() => openPhoton(t.mint)}
-              onLookup={() => onClickContract(t.mint)}
-            />
-          ))}
+      </div>
+    </div>
+  );
+}
+
+// Left-rail watchlist. A drop target for cards dragged from the live grid; the
+// pinned cards keep updating from each snapshot and freeze (marked "stale") if
+// the token leaves the live window.
+export function Watchlist({
+  mints,
+  data,
+  liveMints,
+  onDropMint,
+  onRemove,
+  onClickContract,
+  onBuy
+}: {
+  mints: string[];
+  data: Map<string, FlowToken>;
+  liveMints: Set<string>;
+  onDropMint: (mint: string) => void;
+  onRemove: (mint: string) => void;
+  onClickContract: (mint: string) => void;
+  onBuy: (mint: string) => void;
+}) {
+  const [over, setOver] = useState(false);
+  const [addInput, setAddInput] = useState('');
+  const [addErr, setAddErr] = useState(false);
+
+  function submitAdd() {
+    const m = addInput.trim();
+    if (detectWatchChain(m)) {
+      onDropMint(m);
+      setAddInput('');
+      setAddErr(false);
+    } else {
+      setAddErr(true);
+    }
+  }
+
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; if (!over) setOver(true); }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(false); }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setOver(false);
+        const mint = e.dataTransfer.getData('text/plain');
+        if (mint) onDropMint(mint);
+      }}
+      className={`w-72 shrink-0 self-start sticky top-2 flex flex-col max-h-[calc(100vh-140px)] rounded border transition-colors ${
+        over ? 'border-emerald-500 bg-emerald-500/5' : 'border-slate-800 bg-slate-900/30'
+      }`}
+    >
+      <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between shrink-0">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-300">★ Watchlist</span>
+        <span className="text-[10px] text-slate-500">{mints.length}</span>
+      </div>
+
+      {/* Paste a mint to add it to the watchlist manually */}
+      <div className="px-2 py-2 border-b border-slate-800 shrink-0">
+        <div className="flex items-center gap-1.5">
+          <input
+            value={addInput}
+            onChange={(e) => { setAddInput(e.target.value); if (addErr) setAddErr(false); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') submitAdd(); }}
+            placeholder="Paste a mint or 0x… to add"
+            spellCheck={false}
+            className={`flex-1 min-w-0 bg-slate-950 border rounded px-2 py-1 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none ${
+              addErr ? 'border-red-600' : 'border-slate-700 focus:border-emerald-600'
+            }`}
+          />
+          <button
+            onClick={submitAdd}
+            disabled={!addInput.trim()}
+            title="Add to watchlist"
+            className="shrink-0 px-2 py-1 rounded text-xs bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40"
+          >
+            +
+          </button>
         </div>
-      )}
+        {addErr && <div className="text-[10px] text-red-400 mt-1">Enter a valid Solana mint or ETH (0x…) address.</div>}
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {mints.length === 0 ? (
+          <div className="px-3 py-10 text-center text-xs text-slate-600">
+            Drag a token card here — or paste a mint above — to pin it and watch it closely.
+          </div>
+        ) : (
+          <div className="p-2 space-y-2">
+            {mints.map((mint) => {
+              const t = data.get(mint);
+              if (!t) return null;
+              return (
+                <FlowCard
+                  key={mint}
+                  t={t}
+                  onClick={() => openPhoton(mint)}
+                  onLookup={() => onClickContract(mint)}
+                  onBuy={() => onBuy(mint)}
+                  draggable
+                  inWatchlist
+                  pinned
+                  onTogglePin={() => onRemove(mint)}
+                  stale={!liveMints.has(mint)}
+                />
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -272,22 +524,61 @@ function parseUsd(s: string): number | null {
   return v;
 }
 
-function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void; onLookup: () => void }) {
+function FlowCard({
+  t,
+  onClick,
+  onLookup,
+  onBuy,
+  draggable,
+  pinned,
+  onTogglePin,
+  stale,
+  inWatchlist
+}: {
+  t: FlowToken;
+  onClick: () => void;
+  onLookup: () => void;
+  onBuy?: () => void;
+  draggable?: boolean;
+  pinned?: boolean;
+  onTogglePin?: () => void;
+  stale?: boolean;
+  inWatchlist?: boolean;
+}) {
+  const isEth = isEthAddr(t.mint);
   const positive = t.netInflowSol >= 0;
   const total = t.buyVolSol + t.sellVolSol;
   const buyPct = total > 0 ? (t.buyVolSol / total) * 100 : 50;
   const meta = useTokenMeta(t.mint, t.uri);
   const dexPaid = useDexPaid(t.mint);
+  // pump.fun-specific orders endpoint is Solana-only.
+  const dexUpdatedAt = useDexUpdatedAt(t.mint, dexPaid && !isEth);
 
   return (
     <div
       onClick={onClick}
-      title="Click to open the Photon chart for this token"
+      draggable={draggable}
+      onDragStart={draggable ? (e) => {
+        e.dataTransfer.setData('text/plain', t.mint);
+        // Cards already in the watchlist carry a remove marker so dropping them on
+        // the feed unpins them; feed cards just carry the mint (drop on rail = pin).
+        if (inWatchlist) {
+          e.dataTransfer.setData(WATCHLIST_REMOVE_TYPE, t.mint);
+          e.dataTransfer.effectAllowed = 'move';
+        } else {
+          e.dataTransfer.effectAllowed = 'copy';
+        }
+      } : undefined}
+      title={
+        !draggable ? 'Click to open the chart for this token'
+        : inWatchlist ? 'Drag out to remove from the watchlist · click to open the chart'
+        : 'Drag to the watchlist to pin · click to open the chart'
+      }
       className={`rounded border p-3 cursor-pointer transition-colors ${
         dexPaid ? 'bg-emerald-500/15' : 'bg-slate-900/40'
       } ${
         positive ? 'border-emerald-900/60 hover:border-emerald-600' : 'border-red-900/60 hover:border-red-600'
-      }`}
+      } ${stale ? 'opacity-60' : ''}`}
     >
       <div className="flex items-center gap-2">
         <TokenIcon mint={t.mint} image={meta?.image ?? null} symbol={t.symbol} />
@@ -295,10 +586,38 @@ function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void;
           <div className="flex items-center gap-1.5">
             <span className="text-base font-semibold text-slate-100 truncate">{t.symbol ?? '???'}</span>
             {dexPaid && <DexPaidBadge />}
+            {dexPaid && dexUpdatedAt !== null && (
+              <span
+                title={`DexScreener profile updated ${ageStr(dexUpdatedAt)} ago (${new Date(dexUpdatedAt * 1000).toLocaleString()})`}
+                className="text-[10px] font-medium text-emerald-300/80 tabular-nums shrink-0"
+              >
+                {ageStr(dexUpdatedAt)}
+              </span>
+            )}
+            {stale && (
+              <span
+                title="No trades in the live window — showing last-known values"
+                className="rounded bg-slate-700/50 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-400 shrink-0"
+              >
+                stale
+              </span>
+            )}
           </div>
           <div className="text-xs text-slate-500 truncate">{t.name ?? '—'}</div>
         </div>
         <div className="ml-auto flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          <CopyButton value={t.mint} title="Copy mint address" className={ACTION_BTN} />
+          {onTogglePin && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
+              title={pinned ? 'Remove from watchlist' : 'Add to watchlist'}
+              className={`${ACTION_BTN} ${pinned ? 'text-amber-400 hover:text-amber-300' : ''}`}
+            >
+              {pinned ? '★' : '☆'}
+            </button>
+          )}
+          <SocialLink href={`https://v2.bubblemaps.io/map?address=${t.mint}&chain=${isEth ? 'eth' : 'solana'}`} label="🫧" title="Open on Bubblemaps" className={ACTION_BTN} />
+          {!isEth && <SocialLink href={`https://pump.fun/coin/${t.mint}`} label="💊" title="Open on pump.fun" className={ACTION_BTN} />}
           {meta?.twitter && <SocialLink href={meta.twitter} label="𝕏" title="Open X / Twitter" className={ACTION_BTN} />}
           {meta?.telegram && <SocialLink href={meta.telegram} label="✈" title="Open Telegram" className={ACTION_BTN} />}
           {meta?.website && <SocialLink href={meta.website} label="🌐" title="Open website" className={ACTION_BTN} />}
@@ -311,40 +630,55 @@ function FlowCard({ t, onClick, onLookup }: { t: FlowToken; onClick: () => void;
           </button>
           <DexScreenerButton
             address={t.mint}
-            chain="solana"
+            chain={isEth ? 'ethereum' : 'solana'}
             title="Open on DexScreener"
             className="inline-flex items-center justify-center w-6 h-6 rounded-[3px] overflow-hidden shrink-0 opacity-80 hover:opacity-100 ring-1 ring-transparent hover:ring-emerald-500/60 transition"
           />
-          <CopyButton value={t.mint} title="Copy mint address" className={ACTION_BTN} />
         </div>
       </div>
 
-      <div className="mt-2 flex items-baseline flex-wrap gap-x-2 gap-y-1">
-        <span className={`text-xl font-semibold ${positive ? 'text-emerald-400' : 'text-red-400'}`}>
-          {positive ? '+' : ''}{fmtSol(t.netInflowSol)}
-        </span>
-        <span className="text-[11px] uppercase tracking-wider text-slate-500">◎ Net Inflow · 15m</span>
-        <span className="text-xs text-slate-400"><span className="text-slate-600">tx</span> {t.txCount}</span>
-        <span className="text-xs text-slate-400"><span className="text-slate-600">age</span> {ageStr(t.firstSeen)}</span>
-        {t.bundledPct !== null && <BundleBadge pct={t.bundledPct} wallets={t.bundleWallets} />}
-      </div>
+      {!isEth && (
+        <div className="mt-2 flex items-baseline flex-wrap gap-x-2 gap-y-1">
+          <span className={`text-xl font-semibold ${positive ? 'text-emerald-400' : 'text-red-400'}`}>
+            {positive ? '+' : ''}{fmtSol(t.netInflowSol)}
+          </span>
+          <span className="text-[11px] uppercase tracking-wider text-slate-500">◎ Net Inflow · 15m</span>
+          <span className="text-xs text-slate-400"><span className="text-slate-600">tx</span> {t.txCount}</span>
+          <span className="text-xs text-slate-400"><span className="text-slate-600">age</span> {ageStr(t.firstSeen)}</span>
+          {t.bundledPct !== null && <BundleBadge pct={t.bundledPct} wallets={t.bundleWallets} />}
+        </div>
+      )}
 
       <div className="mt-1.5 flex items-baseline gap-2">
-        <span className="text-[10px] uppercase tracking-wider text-slate-500">Market Cap</span>
+        <span className="text-[10px] uppercase tracking-wider text-slate-500">{isEth ? 'ETH ·' : ''} Market Cap</span>
         <span className="text-2xl font-bold text-slate-100">{fmtUsd(t.marketCapUsd)}</span>
+        {isEth && t.priceUsd !== null && (
+          <span className="text-xs text-slate-400 tabular-nums">{fmtPrice(t.priceUsd)}</span>
+        )}
+        {onBuy && !isEth && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onBuy(); }}
+            title="Buy this token in the Trade terminal"
+            className="ml-auto self-center rounded bg-emerald-600 hover:bg-emerald-500 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white shrink-0"
+          >
+            Buy
+          </button>
+        )}
       </div>
 
-      <Sparkline data={t.spark} positive={positive} />
+      {!isEth && <Sparkline data={t.spark} positive={positive} />}
 
-      <div className="mt-2 flex items-center gap-2 text-xs">
-        <span className="text-emerald-400 font-medium">▲ {fmtSol(t.buyVolSol)}</span>
-        <div className="flex-1 h-1.5 rounded-full bg-red-500/40 overflow-hidden">
-          <div className="h-full bg-emerald-500" style={{ width: `${buyPct}%` }} />
+      {!isEth && (
+        <div className="mt-2 flex items-center gap-2 text-xs">
+          <span className="text-emerald-400 font-medium">▲ {fmtSol(t.buyVolSol)}</span>
+          <div className="flex-1 h-1.5 rounded-full bg-red-500/40 overflow-hidden">
+            <div className="h-full bg-emerald-500" style={{ width: `${buyPct}%` }} />
+          </div>
+          <span className="text-red-400 font-medium">{fmtSol(t.sellVolSol)} ▼</span>
         </div>
-        <span className="text-red-400 font-medium">{fmtSol(t.sellVolSol)} ▼</span>
-      </div>
+      )}
 
-      <GraduationBar marketCapUsd={t.marketCapUsd} />
+      {!isEth && <GraduationBar marketCapUsd={t.marketCapUsd} />}
 
       <div className="mt-1.5 mono text-[11px] text-slate-600 truncate">{shortMint(t.mint)}</div>
     </div>
@@ -447,15 +781,17 @@ function useTokenMeta(mint: string, uri: string | null): TokenMeta | null {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(toHttp(uri));
-        if (!res.ok) throw new Error('meta');
-        const json = await res.json();
+        // Fetch via the main process — token-metadata hosts don't send CORS
+        // headers, so a direct renderer fetch is blocked.
+        const json = await window.api.fetchJson(toHttp(uri));
+        if (!json) throw new Error('meta');
+        const image = json.image;
         const m: TokenMeta = {
-          image: typeof json?.image === 'string' ? toHttp(json.image) : null,
+          image: typeof image === 'string' ? toHttp(image) : null,
           // pump.fun JSON puts socials at the top level; some use `x` for Twitter.
-          twitter: asTwitter(json?.twitter ?? json?.x),
-          telegram: asTelegram(json?.telegram),
-          website: asUrl(json?.website)
+          twitter: asTwitter(json.twitter ?? json.x),
+          telegram: asTelegram(json.telegram),
+          website: asUrl(json.website)
         };
         if (!cancelled) {
           metaCache.set(mint, m);
@@ -518,6 +854,53 @@ function useDexPaid(mint: string): boolean {
   }, [mint]);
 
   return paid;
+}
+
+// When a token's DexScreener profile was paid for / last updated. DexScreener's
+// per-token orders endpoint records each paid action with a `paymentTimestamp`;
+// the approved `tokenProfile` (or community takeover) order is the "enhanced
+// profile" purchase, so its payment time ≈ when the update went through. Only
+// fetched for tokens already flagged paid (so non-paid tokens cost no request).
+// Returns unix seconds, or null. Cached per mint; null caches too (definitive
+// "no dated order"), but transient errors don't, so a later render can retry.
+interface DexOrder {
+  type?: string;
+  status?: string;
+  paymentTimestamp?: number;
+}
+
+const dexUpdatedCache = new Map<string, number | null>();
+
+function useDexUpdatedAt(mint: string, enabled: boolean): number | null {
+  const [ts, setTs] = useState<number | null>(() => dexUpdatedCache.get(mint) ?? null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (dexUpdatedCache.has(mint)) { setTs(dexUpdatedCache.get(mint)!); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`https://api.dexscreener.com/orders/v1/solana/${mint}`);
+        if (!res.ok) throw new Error('orders');
+        const json = (await res.json()) as { orders?: DexOrder[] } | DexOrder[];
+        const orders = Array.isArray(json) ? json : Array.isArray(json?.orders) ? json.orders : [];
+        let latestMs: number | null = null;
+        for (const o of orders) {
+          if (o?.status !== 'approved') continue;
+          if (o?.type !== 'tokenProfile' && o?.type !== 'communityTakeover') continue;
+          const pt = typeof o.paymentTimestamp === 'number' ? o.paymentTimestamp : null;
+          if (pt !== null && (latestMs === null || pt > latestMs)) latestMs = pt;
+        }
+        const secs = latestMs !== null ? Math.floor(latestMs / 1000) : null;
+        if (!cancelled) { dexUpdatedCache.set(mint, secs); setTs(secs); }
+      } catch {
+        // Transient failure — do NOT cache, so a later render can retry.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mint, enabled]);
+
+  return ts;
 }
 
 // Bold, hard-to-miss badge shown next to the name when DexScreener is updated.
@@ -599,6 +982,13 @@ function fmtUsd(n: number | null): string {
   return `$${n.toFixed(0)}`;
 }
 
+function fmtPrice(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  if (n >= 1) return `$${n.toFixed(2)}`;
+  if (n >= 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toPrecision(2)}`;
+}
+
 function ageStr(firstSeenSec: number): string {
   const s = Math.max(0, Math.floor(Date.now() / 1000 - firstSeenSec));
   if (s < 60) return `${s}s`;
@@ -615,5 +1005,8 @@ function shortMint(a: string): string {
 // Open the Photon chart for a mint in the system browser. Photon resolves the
 // token mint to its primary pool on the /lp route.
 function openPhoton(mint: string): void {
-  window.open(`https://photon-sol.tinyastro.io/en/lp/${mint}`, '_blank', 'noopener,noreferrer');
+  const url = isEthAddr(mint)
+    ? `https://dexscreener.com/ethereum/${mint}`
+    : `https://photon-sol.tinyastro.io/en/lp/${mint}`;
+  window.open(url, '_blank', 'noopener,noreferrer');
 }
