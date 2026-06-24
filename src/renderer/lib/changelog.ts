@@ -7,6 +7,13 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '2.13.0',
+    highlights: [
+      'Defi Dashboard is now available on macOS — a universal build for both Intel and Apple-Silicon Macs.',
+      'Access is now managed with a personal code — enter yours once when the app opens.'
+    ]
+  },
+  {
     version: '2.12.0',
     highlights: [
       'New “Dale” shared charts board — beam a chart to your crew with “+ Dale” (or paste an address) and everyone sees it live. Set it up in Settings → Dale (shared charts).',

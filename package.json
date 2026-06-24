@@ -1,6 +1,6 @@
 {
   "name": "walletlookup",
-  "version": "2.12.0",
+  "version": "2.13.0",
   "description": "DeFi Dashboard — live token flows, wallet tracking, and Solana trading",
   "type": "module",
   "main": "out/main/index.js",

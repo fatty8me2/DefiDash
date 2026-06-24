@@ -58,8 +58,10 @@ export class AccessGate extends EventEmitter {
     try {
       const res = await fetch(`${ACCESS_DB_URL}/access/${encodeURIComponent(this.code)}.json`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { allowed?: boolean; name?: string } | null;
-      if (data && data.allowed === true) {
+      const data = (await res.json()) as { allowed?: boolean | string; name?: string } | null;
+      // Accept a real boolean OR the string "true" — the Firebase console can
+      // save the value either way depending on how it was entered.
+      if (data && (data.allowed === true || data.allowed === 'true')) {
         this.cache = { status: 'allowed', name: data.name ?? null, lastVerifiedAt: Date.now() };
         this.saveCache();
         this.setState({ status: 'allowed', name: data.name ?? null });
